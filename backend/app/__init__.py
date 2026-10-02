@@ -1,0 +1,1 @@
+"""Ficmart backend application package."""
