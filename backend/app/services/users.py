@@ -112,7 +112,7 @@ async def resolve_current_user(
     statement = (
         pg_insert(User)
         .values(**values, created_at=datetime.now(UTC))
-        .on_conflict_do_nothing(index_elements=[User.auth0_sub])
+        .on_conflict_do_nothing()
         .returning(User)
     )
     try:
