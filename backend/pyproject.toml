@@ -41,7 +41,7 @@ select = ["E", "F", "I"]
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "basic"
-include = ["app", "alembic", "tests"]
+include = ["app", "alembic", "scripts", "tests"]
 
 [tool.uv]
 package = false
