@@ -5,7 +5,10 @@ from sqlalchemy.pool import NullPool
 from app.core.config import settings
 
 celery_app = Celery("ficmart", broker=settings.redis_url)
-celery_app.conf.update(task_acks_late=True)
+celery_app.conf.update(
+    task_acks_late=True,
+    imports=("app.workers.payment_tasks",),
+)
 app = celery_app
 
 worker_engine = create_async_engine(
