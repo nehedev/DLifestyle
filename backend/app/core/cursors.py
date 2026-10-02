@@ -30,22 +30,6 @@ def _decode(cursor: str) -> dict[str, Any]:
     return payload
 
 
-def encode_product_cursor(product_id: int) -> str:
-    return _encode({"id": product_id})
-
-
-def decode_product_cursor(cursor: str) -> int:
-    payload = _decode(cursor)
-    product_id = payload.get("id")
-    if (
-        isinstance(product_id, bool)
-        or not isinstance(product_id, int)
-        or product_id < 1
-    ):
-        raise InvalidCursor
-    return product_id
-
-
 def encode_order_cursor(created_at: datetime, order_id: int) -> str:
     return _encode({"created_at": created_at.isoformat(), "id": order_id})
 

@@ -26,19 +26,17 @@ from app.schemas.orders import (
     OrderResponse,
 )
 from app.schemas.payments import PayResponse
-from app.schemas.products import ProductResponse
 from app.schemas.user import MeResponse
 from app.services.orders import (
     IdempotencyKeyReused,
+    OrderingClosedForDate,
     OrderNotCancellable,
     OrderNotFound,
-    UnavailableProducts,
+    UnavailableMenuItems,
     cancel_order,
     create_order,
     get_order_detail,
-    get_product,
     list_orders,
-    list_products,
 )
 from app.services.payments import (
     PaymentInitializationFailed,
@@ -46,6 +44,7 @@ from app.services.payments import (
     PaymentOrderNotPending,
     initialize_payment,
 )
+from app.services.store_settings import StoreNotConfigured
 from app.workers.payment_tasks import process_payment_event
 
 router = APIRouter()
@@ -62,32 +61,6 @@ async def get_me(
         first_name=user.first_name,
         last_name=user.last_name,
     )
-
-
-@router.get("/products", response_model=CursorPage[ProductResponse])
-async def get_products(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    cursor: str | None = None,
-) -> CursorPage[ProductResponse]:
-    try:
-        return await list_products(session, limit=limit, cursor=cursor)
-    except InvalidCursor as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="invalid_cursor",
-        ) from error
-
-
-@router.get("/products/{product_id}", response_model=ProductResponse)
-async def get_product_by_id(
-    product_id: int,
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> ProductResponse:
-    product = await get_product(session, product_id)
-    if product is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    return product
 
 
 @router.post("/orders", response_model=OrderResponse)
@@ -107,10 +80,20 @@ async def post_order(
             request=request,
             idempotency_key=idempotency_key,
         )
-    except UnavailableProducts as error:
+    except StoreNotConfigured as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="store_not_configured",
+        ) from error
+    except OrderingClosedForDate as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"unavailable_product_ids": error.product_ids},
+            detail="ordering_closed_for_date",
+        ) from error
+    except UnavailableMenuItems as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"unavailable_menu_item_ids": error.menu_item_ids},
         ) from error
     except IdempotencyKeyReused as error:
         raise HTTPException(

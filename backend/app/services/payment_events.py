@@ -6,14 +6,52 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Order, OrderItem, Payment, Product
+from app.models import Order, OrderItem, Payment
 from app.payments.protocol import PaymentEvent, PaymentProvider
+from app.services.menu import is_orderable, load_menu_items_with_days
+from app.services.store_settings import (
+    StoreNotConfigured,
+    has_cutoff_passed,
+    require_store_settings,
+)
+from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 
-class _InsufficientStock(Exception):
-    pass
+async def _can_still_be_fulfilled(
+    session: AsyncSession,
+    *,
+    order: Order,
+    now: datetime,
+) -> bool:
+    try:
+        store_settings = await require_store_settings(session)
+    except StoreNotConfigured:
+        return False
+    if has_cutoff_passed(
+        store_settings,
+        fulfillment_date=order.fulfillment_date,
+        now=now,
+    ):
+        return False
+    order_items = list(
+        await session.scalars(
+            select(OrderItem)
+            .where(OrderItem.order_id == order.id)
+            .order_by(OrderItem.menu_item_id)
+        )
+    )
+    menu_items = await load_menu_items_with_days(
+        session, [item.menu_item_id for item in order_items]
+    )
+    menu_items_by_id = {menu_item.id: menu_item for menu_item in menu_items}
+    weekday = order.fulfillment_date.isoweekday()
+    return all(
+        item.menu_item_id in menu_items_by_id
+        and is_orderable(menu_items_by_id[item.menu_item_id], weekday=weekday)
+        for item in order_items
+    )
 
 
 async def _conditional_payment_transition(
@@ -52,29 +90,6 @@ async def _conditional_order_transition(
         .returning(Order.id)
     )
     return result.scalar_one_or_none() == order.id
-
-
-async def _release_order_stock(
-    session: AsyncSession,
-    *,
-    order_id: int,
-) -> None:
-    order_items = list(
-        await session.scalars(
-            select(OrderItem)
-            .where(OrderItem.order_id == order_id)
-            .order_by(OrderItem.product_id)
-        )
-    )
-    for item in order_items:
-        result = await session.execute(
-            update(Product)
-            .where(Product.id == item.product_id)
-            .values(stock_quantity=Product.stock_quantity + item.quantity)
-            .returning(Product.id)
-        )
-        if result.scalar_one_or_none() != item.product_id:
-            raise RuntimeError("Order item references a missing product")
 
 
 async def process_payment_event_impl(
@@ -133,6 +148,7 @@ async def _process_charge_success(
     if payment.status == "succeeded":
         return
     if payment.status != "initiated":
+        logger.error("payment.invalid_transition")
         return
 
     verified = await provider.verify(reference)
@@ -147,7 +163,12 @@ async def _process_charge_success(
                 current_payment = await session.scalar(
                     select(Payment).where(Payment.id == payment.id).with_for_update()
                 )
-                if current_payment is None or current_payment.status != "initiated":
+                if current_payment is None:
+                    return
+                if current_payment.status == "succeeded":
+                    return
+                if current_payment.status != "initiated":
+                    logger.error("payment.invalid_transition")
                     return
                 changed = await _conditional_payment_transition(
                     session,
@@ -171,7 +192,12 @@ async def _process_charge_success(
             current_payment = await session.scalar(
                 select(Payment).where(Payment.id == payment.id).with_for_update()
             )
-            if current_payment is None or current_payment.status != "initiated":
+            if current_payment is None:
+                return
+            if current_payment.status == "succeeded":
+                return
+            if current_payment.status != "initiated":
+                logger.error("payment.invalid_transition")
                 return
 
             order = await session.scalar(
@@ -203,64 +229,36 @@ async def _process_charge_success(
                     raise RuntimeError("Payment transition lost after order update")
                 became_paid = True
             elif order.status == "cancelled":
-                try:
-                    async with session.begin_nested():
-                        order_items = list(
-                            await session.scalars(
-                                select(OrderItem)
-                                .where(OrderItem.order_id == order.id)
-                                .order_by(OrderItem.product_id)
-                            )
-                        )
-                        for item in order_items:
-                            result = await session.execute(
-                                update(Product)
-                                .where(
-                                    Product.id == item.product_id,
-                                    Product.stock_quantity >= item.quantity,
-                                )
-                                .values(
-                                    stock_quantity=Product.stock_quantity
-                                    - item.quantity
-                                )
-                                .returning(Product.id)
-                            )
-                            if result.scalar_one_or_none() != item.product_id:
-                                raise _InsufficientStock
-                        if not await _conditional_order_transition(
-                            session,
-                            order=order,
-                            expected_status="cancelled",
-                            new_status="paid",
-                            updated_at=now,
-                        ):
-                            raise RuntimeError(
-                                "Order transition lost after stock reserve"
-                            )
-                        if not await _conditional_payment_transition(
-                            session,
-                            payment=current_payment,
-                            expected_status="initiated",
-                            new_status="succeeded",
-                            updated_at=now,
-                            provider_transaction_id=verified.provider_transaction_id,
-                        ):
-                            raise RuntimeError(
-                                "Payment transition lost after order update"
-                            )
-                    became_paid = True
-                    late_reinstated = True
-                except _InsufficientStock:
-                    if await _conditional_payment_transition(
+                if await _can_still_be_fulfilled(session, order=order, now=now):
+                    if not await _conditional_order_transition(
+                        session,
+                        order=order,
+                        expected_status="cancelled",
+                        new_status="paid",
+                        updated_at=now,
+                    ):
+                        return
+                    if not await _conditional_payment_transition(
                         session,
                         payment=current_payment,
                         expected_status="initiated",
-                        new_status="refund_pending",
+                        new_status="succeeded",
                         updated_at=now,
                         provider_transaction_id=verified.provider_transaction_id,
                     ):
-                        enqueue_refund_id = current_payment.id
-                        late_refund_pending = True
+                        raise RuntimeError("Payment transition lost after order update")
+                    became_paid = True
+                    late_reinstated = True
+                elif await _conditional_payment_transition(
+                    session,
+                    payment=current_payment,
+                    expected_status="initiated",
+                    new_status="refund_pending",
+                    updated_at=now,
+                    provider_transaction_id=verified.provider_transaction_id,
+                ):
+                    enqueue_refund_id = current_payment.id
+                    late_refund_pending = True
             else:
                 if await _conditional_payment_transition(
                     session,
@@ -281,8 +279,7 @@ async def _process_charge_success(
     if enqueue_refund_id is not None:
         enqueue_refund(enqueue_refund_id)
     if became_paid:
-        # TODO(Milestone 6): enqueue the order-confirmation email after commit.
-        pass
+        celery_app.send_task("send_order_confirmation_email", args=[order.id])
 
 
 async def _process_payment_failed(
@@ -316,18 +313,16 @@ async def _process_payment_failed(
                 updated_at=now,
             )
             if changed and order.status == "pending":
-                if await _conditional_order_transition(
+                await _conditional_order_transition(
                     session,
                     order=order,
                     expected_status="pending",
                     new_status="cancelled",
                     updated_at=now,
-                ):
-                    await _release_order_stock(session, order_id=order.id)
+                )
 
     if changed:
-        # TODO(Milestone 6): enqueue the payment-failed email after commit.
-        pass
+        celery_app.send_task("send_payment_failed_email", args=[payment.id])
 
 
 async def _process_refund_event(
@@ -344,7 +339,15 @@ async def _process_refund_event(
             if payment is None:
                 logger.error("payment.unknown_reference")
                 return
+            if payment.status == "refunded" and event_type == "refund.processed":
+                return
+            if payment.status == "needs_review" and event_type in {
+                "refund.failed",
+                "refund.needs-attention",
+            }:
+                return
             if payment.status != "refund_pending":
+                logger.error("payment.invalid_transition")
                 return
             next_status = (
                 "refunded" if event_type == "refund.processed" else "needs_review"

@@ -25,6 +25,7 @@ class Payment(Base):
             "'refund_pending', 'refunded')",
             name="valid_status",
         ),
+        CheckConstraint("amount_minor >= 0", name="amount_minor_nonnegative"),
         Index("ix_payments_order_id", "order_id"),
         UniqueConstraint(
             "provider",

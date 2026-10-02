@@ -1,46 +1,54 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
-type NonEmptyString = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1)
+type NonEmptyText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+]
+type OptionalAddress = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+]
+type PhoneNumber = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=3, max_length=16),
+    Field(pattern=r"^\+[1-9][0-9]{1,14}$"),
+]
+type OrderNotes = Annotated[
+    str, StringConstraints(strip_whitespace=True, max_length=1000)
 ]
 
 
-class ShippingAddress(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: NonEmptyString
-    phone: Annotated[
-        str,
-        Field(pattern=r"^\+[1-9][0-9]{1,14}$", min_length=3, max_length=16),
-    ]
-    address_line_1: NonEmptyString
-    city: NonEmptyString
-    state: NonEmptyString
-    country: Annotated[str, Field(pattern=r"^[A-Z]{2}$")]
+class OrderContact(BaseModel):
+    name: NonEmptyText
+    phone: PhoneNumber
+    address: OptionalAddress | None = None
 
 
 class OrderItemInput(BaseModel):
-    product_id: Annotated[int, Field(gt=0)]
+    menu_item_id: Annotated[int, Field(gt=0)]
     quantity: Annotated[int, Field(gt=0)]
 
 
 class OrderCreate(BaseModel):
-    items: list[OrderItemInput]
-    shipping_address: ShippingAddress
+    items: Annotated[list[OrderItemInput], Field(min_length=1)]
+    fulfillment_type: Annotated[str, Field(pattern=r"^(delivery|pickup)$")]
+    fulfillment_date: date
+    contact: OrderContact
+    notes: OrderNotes | None = None
 
     @model_validator(mode="after")
-    def reject_duplicate_products(self) -> "OrderCreate":
-        product_ids = [item.product_id for item in self.items]
-        if len(product_ids) != len(set(product_ids)):
-            raise ValueError("duplicate_product_ids")
+    def check_items_and_contact(self) -> "OrderCreate":
+        menu_item_ids = [item.menu_item_id for item in self.items]
+        if len(menu_item_ids) != len(set(menu_item_ids)):
+            raise ValueError("duplicate_menu_item_ids")
+        if self.fulfillment_type == "delivery" and self.contact.address is None:
+            raise ValueError("address_required_for_delivery")
         return self
 
 
 class OrderItemResponse(BaseModel):
-    product_id: int
+    name: str
     quantity: int
     unit_price_minor: int
 
@@ -55,9 +63,14 @@ class PaymentSummary(BaseModel):
 class OrderResponse(BaseModel):
     id: int
     status: str
+    fulfillment_type: str
+    fulfillment_date: date
+    contact: OrderContact
+    notes: str | None
+    items_total_minor: int
+    delivery_fee_minor: int
     total_minor: int
     currency: str
-    shipping_address: ShippingAddress
     created_at: datetime
     updated_at: datetime
     items: list[OrderItemResponse]

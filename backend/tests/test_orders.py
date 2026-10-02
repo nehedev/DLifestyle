@@ -1,8 +1,9 @@
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -12,18 +13,32 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_current_user
+from app.core.config import settings
 from app.db.session import get_session
 from app.main import app
-from app.models import Order, Payment, Product, User
+from app.models import MenuItem, MenuItemDay, Order, OrderItem, Payment, User
+from app.workers.celery_app import celery_app
 
-_ADDRESS = {
-    "name": "Ada Lovelace",
-    "phone": "+14155552671",
-    "address_line_1": "1 Analytical Engine Way",
-    "city": "London",
-    "state": "London",
-    "country": "GB",
+BUSINESS_ZONE = ZoneInfo(settings.business_timezone)
+DELIVERY_FEE_MINOR = 1500
+MAX_ADVANCE_DAYS = 7
+CUTOFF = time(16, 0)
+
+
+def business_today() -> date:
+    return datetime.now(UTC).astimezone(BUSINESS_ZONE).date()
+
+
+def a_served_day(offset: int = 1) -> date:
+    return business_today() + timedelta(days=offset)
+
+
+CONTACT = {
+    "name": "Ada Obi",
+    "phone": "+2348012345678",
+    "address": "12 Example Street, Lekki",
 }
+PICKUP_CONTACT = {"name": "Ada Obi", "phone": "+2348012345678"}
 
 
 @dataclass
@@ -32,39 +47,60 @@ class OrderTestClient:
     session_factory: async_sessionmaker[AsyncSession]
     user_id: int
     user: User
+    enqueued_tasks: list[tuple[str, list[int] | None]] = field(default_factory=list)
 
-    async def add_product(
+    async def configure_store(
         self,
         *,
-        name: str,
-        price_minor: int = 100,
-        stock_quantity: int = 10,
+        delivery_fee_minor: int = DELIVERY_FEE_MINOR,
+        cutoff: time = CUTOFF,
+        max_advance_days: int = MAX_ADVANCE_DAYS,
+    ) -> None:
+        async with self.session_factory.begin() as session:
+            from app.models import StoreSettings
+
+            session.add(
+                StoreSettings(
+                    id=1,
+                    delivery_fee_minor=delivery_fee_minor,
+                    order_cutoff_time=cutoff,
+                    max_advance_days=max_advance_days,
+                    updated_at=datetime.now(UTC),
+                )
+            )
+
+    async def add_menu_item(
+        self,
+        *,
+        name: str = "Jollof rice + chicken",
+        price_minor: int = 350_000,
+        weekdays: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7),
         is_active: bool = True,
+        is_sold_out: bool = False,
     ) -> int:
         async with self.session_factory.begin() as session:
-            product = Product(
+            now = datetime.now(UTC)
+            menu_item = MenuItem(
                 name=name,
                 price_minor=price_minor,
-                stock_quantity=stock_quantity,
                 is_active=is_active,
+                is_sold_out=is_sold_out,
+                created_at=now,
+                updated_at=now,
             )
-            session.add(product)
+            session.add(menu_item)
             await session.flush()
-            return product.id
-
-    async def add_products(
-        self,
-        products: list[Product],
-    ) -> list[int]:
-        async with self.session_factory.begin() as session:
-            session.add_all(products)
-            await session.flush()
-            return [product.id for product in products]
+            session.add_all(
+                MenuItemDay(menu_item_id=menu_item.id, weekday=weekday)
+                for weekday in weekdays
+            )
+            return menu_item.id
 
 
 @pytest_asyncio.fixture
 async def order_client(
     test_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[OrderTestClient]:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory.begin() as session:
@@ -72,28 +108,34 @@ async def order_client(
             auth0_sub="auth0|orders-test",
             email="orders-test@example.com",
             first_name="Ada",
-            last_name="Lovelace",
+            last_name="Obi",
             created_at=datetime.now(UTC),
         )
         session.add(user)
         await session.flush()
         user_id = user.id
 
-    user = User(
+    detached_user = User(
         id=user_id,
         auth0_sub="auth0|orders-test",
         email="orders-test@example.com",
         first_name="Ada",
-        last_name="Lovelace",
+        last_name="Obi",
         created_at=datetime.now(UTC),
     )
+    enqueued_tasks: list[tuple[str, list[int] | None]] = []
+
+    def capture_task(task_name: str, args: list[int] | None = None, **_: Any) -> None:
+        enqueued_tasks.append((task_name, args))
+
+    monkeypatch.setattr(celery_app, "send_task", capture_task)
 
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
             yield session
 
     async def override_current_user() -> User:
-        return user
+        return detached_user
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_current_user
@@ -102,22 +144,16 @@ async def order_client(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
         ) as client:
-            yield OrderTestClient(client, session_factory, user_id, user)
+            yield OrderTestClient(
+                client,
+                session_factory,
+                user_id,
+                detached_user,
+                enqueued_tasks,
+            )
     finally:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_current_user, None)
-
-
-async def _stock_quantity(
-    session_factory: async_sessionmaker[AsyncSession],
-    product_id: int,
-) -> int:
-    async with session_factory() as session:
-        quantity = await session.scalar(
-            select(Product.stock_quantity).where(Product.id == product_id)
-        )
-    assert quantity is not None
-    return quantity
 
 
 async def _order_count(
@@ -133,90 +169,174 @@ async def _order_count(
 
 
 def _order_payload(
-    items: list[dict[str, int]],
+    menu_item_ids: list[int],
     *,
+    fulfillment_type: str = "delivery",
+    fulfillment_date: date | None = None,
+    contact: dict[str, Any] | None = None,
+    notes: str | None = None,
+    quantities: list[int] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {"items": items, "shipping_address": _ADDRESS}
+    quantities = quantities or [1] * len(menu_item_ids)
+    payload: dict[str, Any] = {
+        "items": [
+            {"menu_item_id": menu_item_id, "quantity": quantity}
+            for menu_item_id, quantity in zip(menu_item_ids, quantities, strict=True)
+        ],
+        "fulfillment_type": fulfillment_type,
+        "fulfillment_date": (fulfillment_date or a_served_day()).isoformat(),
+        "contact": contact if contact is not None else dict(CONTACT),
+        "notes": notes,
+    }
     if extra:
         payload.update(extra)
     return payload
 
 
-async def test_product_reads_hide_inactive_products(
+async def test_store_not_configured_returns_503(
     order_client: OrderTestClient,
 ) -> None:
-    active_id = await order_client.add_product(name="Active")
-    inactive_id = await order_client.add_product(name="Inactive", is_active=False)
-
-    page = await order_client.client.get("/api/v1/products")
-    assert page.status_code == 200
-    assert [product["id"] for product in page.json()["items"]] == [active_id]
-    assert page.json()["next_cursor"] is None
-    assert page.json()["items"][0]["stock_quantity"] == 10
-
-    active = await order_client.client.get(f"/api/v1/products/{active_id}")
-    inactive = await order_client.client.get(f"/api/v1/products/{inactive_id}")
-    assert active.status_code == 200
-    assert inactive.status_code == 404
+    menu_item_id = await order_client.add_menu_item()
+    response = await order_client.client.post(
+        "/api/v1/orders", json=_order_payload([menu_item_id])
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "store_not_configured"}
+    assert await _order_count(order_client.session_factory, order_client.user_id) == 0
 
 
-async def test_create_order_computes_total_snapshots_price_and_reserves_stock(
+async def test_delivery_totals_add_the_flat_fee_and_snapshot_names_and_prices(
     order_client: OrderTestClient,
 ) -> None:
-    first_id = await order_client.add_product(
-        name="First", price_minor=125, stock_quantity=8
+    await order_client.configure_store()
+    first_id = await order_client.add_menu_item(
+        name="Jollof rice + chicken", price_minor=350_000
     )
-    second_id = await order_client.add_product(
-        name="Second", price_minor=250, stock_quantity=4
+    second_id = await order_client.add_menu_item(
+        name="Assorted moi moi", price_minor=150_000
     )
+
     response = await order_client.client.post(
         "/api/v1/orders",
         json=_order_payload(
-            [
-                {"product_id": first_id, "quantity": 2},
-                {"product_id": second_id, "quantity": 3},
-            ],
-            extra={"total_minor": 1, "price_minor": 1},
+            [first_id, second_id],
+            quantities=[2, 3],
+            extra={"total_minor": 1, "items_total_minor": 1, "delivery_fee_minor": 0},
         ),
     )
 
     assert response.status_code == 200
     order = response.json()
-    assert order["total_minor"] == 1000
+    assert order["items_total_minor"] == 1_150_000
+    assert order["delivery_fee_minor"] == DELIVERY_FEE_MINOR
+    assert order["total_minor"] == 1_150_000 + DELIVERY_FEE_MINOR
     assert order["currency"] == "NGN"
     assert order["status"] == "pending"
-    assert order["shipping_address"] == _ADDRESS
+    assert order["fulfillment_type"] == "delivery"
+    assert order["fulfillment_date"] == a_served_day().isoformat()
+    assert order["contact"] == CONTACT
     assert order["items"] == [
-        {"product_id": first_id, "quantity": 2, "unit_price_minor": 125},
-        {"product_id": second_id, "quantity": 3, "unit_price_minor": 250},
+        {"name": "Jollof rice + chicken", "quantity": 2, "unit_price_minor": 350_000},
+        {"name": "Assorted moi moi", "quantity": 3, "unit_price_minor": 150_000},
     ]
-    assert await _stock_quantity(order_client.session_factory, first_id) == 6
-    assert await _stock_quantity(order_client.session_factory, second_id) == 1
+
+
+async def test_pickup_has_no_delivery_fee(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item(price_minor=200_000)
+    response = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload(
+            [menu_item_id],
+            fulfillment_type="pickup",
+            contact=dict(PICKUP_CONTACT),
+        ),
+    )
+    assert response.status_code == 200
+    order = response.json()
+    assert order["delivery_fee_minor"] == 0
+    assert order["total_minor"] == order["items_total_minor"] == 200_000
+    assert order["contact"]["address"] is None
+
+
+async def test_snapshots_survive_a_menu_price_and_name_edit(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item(
+        name="Original name", price_minor=100_000
+    )
+    created = await order_client.client.post(
+        "/api/v1/orders", json=_order_payload([menu_item_id], quantities=[2])
+    )
+    order_id = created.json()["id"]
+
+    async with order_client.session_factory.begin() as session:
+        menu_item = await session.get(MenuItem, menu_item_id)
+        assert menu_item is not None
+        menu_item.name = "Renamed dish"
+        menu_item.price_minor = 500_000
+
+    detail = await order_client.client.get(f"/api/v1/orders/{order_id}")
+    assert detail.status_code == 200
+    assert detail.json()["items"] == [
+        {"name": "Original name", "quantity": 2, "unit_price_minor": 100_000}
+    ]
+    assert detail.json()["total_minor"] == 200_000 + DELIVERY_FEE_MINOR
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        {"items": [], "shipping_address": {"name": "Missing required fields"}},
+        {"items": [], "fulfillment_type": "delivery"},
         {
-            "items": [{"product_id": 1, "quantity": 0}],
-            "shipping_address": _ADDRESS,
+            "items": [{"menu_item_id": 1, "quantity": 0}],
+            "fulfillment_type": "delivery",
+            "fulfillment_date": "2026-10-05",
+            "contact": CONTACT,
         },
         {
             "items": [
-                {"product_id": 1, "quantity": 1},
-                {"product_id": 1, "quantity": 2},
+                {"menu_item_id": 1, "quantity": 1},
+                {"menu_item_id": 1, "quantity": 2},
             ],
-            "shipping_address": _ADDRESS,
+            "fulfillment_type": "delivery",
+            "fulfillment_date": "2026-10-05",
+            "contact": CONTACT,
         },
         {
-            "items": [{"product_id": 1, "quantity": 1}],
-            "shipping_address": {**_ADDRESS, "phone": "not-e164"},
+            "items": [{"menu_item_id": 1, "quantity": 1}],
+            "fulfillment_type": "delivery",
+            "fulfillment_date": "2026-10-05",
+            "contact": {**CONTACT, "phone": "08012345678"},
         },
         {
-            "items": [{"product_id": 1, "quantity": 1}],
-            "shipping_address": {**_ADDRESS, "country": "USA"},
+            "items": [{"menu_item_id": 1, "quantity": 1}],
+            "fulfillment_type": "delivery",
+            "fulfillment_date": "2026-10-05",
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+        },
+        {
+            "items": [{"menu_item_id": 1, "quantity": 1}],
+            "fulfillment_type": "courier",
+            "fulfillment_date": "2026-10-05",
+            "contact": CONTACT,
+        },
+        {
+            "items": [{"menu_item_id": 1, "quantity": 1}],
+            "fulfillment_type": "delivery",
+            "fulfillment_date": "not-a-date",
+            "contact": CONTACT,
+        },
+        {
+            "items": [{"menu_item_id": 1, "quantity": 1}],
+            "fulfillment_type": "delivery",
+            "fulfillment_date": "2026-10-05",
+            "contact": CONTACT,
+            "notes": "x" * 1001,
         },
     ],
 )
@@ -224,67 +344,118 @@ async def test_invalid_order_payload_is_rejected(
     order_client: OrderTestClient,
     payload: dict[str, Any],
 ) -> None:
+    await order_client.configure_store()
     response = await order_client.client.post("/api/v1/orders", json=payload)
     assert response.status_code == 422
     assert await _order_count(order_client.session_factory, order_client.user_id) == 0
 
 
-async def test_missing_or_inactive_products_return_conflict_without_order(
+async def test_blank_contact_strings_are_rejected(
     order_client: OrderTestClient,
 ) -> None:
-    inactive_id = await order_client.add_product(name="Inactive", is_active=False)
-    active_id = await order_client.add_product(name="Active", stock_quantity=5)
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
+    response = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload([menu_item_id], contact={**CONTACT, "name": "   "}),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"is_active": False},
+        {"is_sold_out": True},
+    ],
+)
+async def test_unavailable_items_return_conflict_without_an_order(
+    order_client: OrderTestClient,
+    overrides: dict[str, Any],
+) -> None:
+    await order_client.configure_store()
+    unavailable_id = await order_client.add_menu_item(name="Unavailable", **overrides)
 
     response = await order_client.client.post(
         "/api/v1/orders",
-        json=_order_payload(
-            [
-                {"product_id": active_id, "quantity": 2},
-                {"product_id": inactive_id, "quantity": 1},
-                {"product_id": 99999, "quantity": 1},
-            ]
-        ),
+        json=_order_payload([unavailable_id]),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {"unavailable_menu_item_ids": [unavailable_id]}
+    }
+    assert await _order_count(order_client.session_factory, order_client.user_id) == 0
+
+
+async def test_unknown_menu_item_returns_conflict(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    response = await order_client.client.post(
+        "/api/v1/orders", json=_order_payload([999_999])
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"unavailable_menu_item_ids": [999_999]}}
+
+
+async def test_item_not_served_on_the_fulfillment_weekday_is_rejected(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store(max_advance_days=14)
+    monday_only_id = await order_client.add_menu_item(name="Monday only", weekdays=(1,))
+    target = next(
+        a_served_day(offset)
+        for offset in range(1, 15)
+        if a_served_day(offset).isoweekday() != 1
+    )
+    response = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload([monday_only_id], fulfillment_date=target),
     )
     assert response.status_code == 409
     assert response.json() == {
-        "detail": {"unavailable_product_ids": [inactive_id, 99999]}
+        "detail": {"unavailable_menu_item_ids": [monday_only_id]}
     }
-    assert await _stock_quantity(order_client.session_factory, active_id) == 5
-    assert await _order_count(order_client.session_factory, order_client.user_id) == 0
 
 
-async def test_insufficient_stock_rolls_back_order_and_all_reservations(
+async def test_sunday_is_rejected_because_no_item_is_served_then(
     order_client: OrderTestClient,
 ) -> None:
-    first_id = await order_client.add_product(
-        name="First", price_minor=100, stock_quantity=10
-    )
-    second_id = await order_client.add_product(
-        name="Second", price_minor=200, stock_quantity=1
+    await order_client.configure_store(max_advance_days=21)
+    saturday_id = await order_client.add_menu_item(name="Sat only", weekdays=(6,))
+    sunday = next(
+        a_served_day(offset)
+        for offset in range(1, 22)
+        if a_served_day(offset).isoweekday() == 7
     )
     response = await order_client.client.post(
         "/api/v1/orders",
-        json=_order_payload(
-            [
-                {"product_id": first_id, "quantity": 4},
-                {"product_id": second_id, "quantity": 2},
-            ]
-        ),
+        json=_order_payload([saturday_id], fulfillment_date=sunday),
     )
-
     assert response.status_code == 409
-    assert response.json() == {"detail": {"unavailable_product_ids": [second_id]}}
-    assert await _stock_quantity(order_client.session_factory, first_id) == 10
-    assert await _stock_quantity(order_client.session_factory, second_id) == 1
-    assert await _order_count(order_client.session_factory, order_client.user_id) == 0
+    assert response.json() == {"detail": {"unavailable_menu_item_ids": [saturday_id]}}
 
 
+@pytest.mark.parametrize(
+    "payload_change",
+    [
+        {"quantities": [3]},
+        {"fulfillment_type": "pickup", "contact": dict(PICKUP_CONTACT)},
+        {"notes": "different notes"},
+        {"contact": {**CONTACT, "name": "Someone Else"}},
+        {"contact": {**CONTACT, "address": "9 Other Road"}},
+        {"contact": {**CONTACT, "phone": "+2348099999999"}},
+    ],
+)
 async def test_idempotency_replays_same_order_and_rejects_changed_payload(
     order_client: OrderTestClient,
+    payload_change: dict[str, Any],
 ) -> None:
-    product_id = await order_client.add_product(name="Replay", stock_quantity=10)
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item(price_minor=100_000)
     headers = {"Idempotency-Key": "replay-1"}
-    payload = _order_payload([{"product_id": product_id, "quantity": 2}])
+    payload = _order_payload([menu_item_id], quantities=[2])
 
     first = await order_client.client.post(
         "/api/v1/orders", json=payload, headers=headers
@@ -292,95 +463,120 @@ async def test_idempotency_replays_same_order_and_rejects_changed_payload(
     replay = await order_client.client.post(
         "/api/v1/orders", json=payload, headers=headers
     )
+    changed = _order_payload(
+        [menu_item_id],
+        quantities=payload_change.pop("quantities", [2]),
+    )
+    changed["fulfillment_date"] = payload["fulfillment_date"]
+    changed.update(payload_change)
     mismatch = await order_client.client.post(
-        "/api/v1/orders",
-        json=_order_payload([{"product_id": product_id, "quantity": 3}]),
-        headers=headers,
+        "/api/v1/orders", json=changed, headers=headers
     )
 
     assert first.status_code == replay.status_code == 200
     assert replay.json() == first.json()
     assert mismatch.status_code == 422
     assert mismatch.json() == {"detail": "idempotency_key_reused"}
-    assert await _stock_quantity(order_client.session_factory, product_id) == 8
     assert await _order_count(order_client.session_factory, order_client.user_id) == 1
+
+
+async def test_idempotency_rejects_a_different_fulfillment_date(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
+    headers = {"Idempotency-Key": "date-change"}
+    first = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload([menu_item_id], fulfillment_date=a_served_day(1)),
+        headers=headers,
+    )
+    second = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload([menu_item_id], fulfillment_date=a_served_day(2)),
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert second.status_code == 422
 
 
 async def test_orders_without_idempotency_key_are_not_deduplicated(
     order_client: OrderTestClient,
 ) -> None:
-    product_id = await order_client.add_product(name="No key", stock_quantity=10)
-    payload = _order_payload([{"product_id": product_id, "quantity": 1}])
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
+    payload = _order_payload([menu_item_id])
     first = await order_client.client.post("/api/v1/orders", json=payload)
     second = await order_client.client.post("/api/v1/orders", json=payload)
 
     assert first.status_code == second.status_code == 200
     assert first.json()["id"] != second.json()["id"]
-    assert await _stock_quantity(order_client.session_factory, product_id) == 8
     assert await _order_count(order_client.session_factory, order_client.user_id) == 2
+
+
+async def test_idempotency_key_length_is_bounded(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
+    response = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload([menu_item_id]),
+        headers={"Idempotency-Key": "x" * 256},
+    )
+    assert response.status_code == 422
 
 
 async def test_order_has_no_item_or_quantity_maximum(
     order_client: OrderTestClient,
 ) -> None:
-    products = [
-        Product(
-            name=f"Uncapped {index}",
-            price_minor=100,
-            stock_quantity=101,
-            is_active=True,
-        )
-        for index in range(101)
+    await order_client.configure_store()
+    first_id = await order_client.add_menu_item(name="Uncapped", price_minor=10_000)
+    extra_ids = [
+        await order_client.add_menu_item(name=f"Extra {index}", price_minor=10_000)
+        for index in range(100)
     ]
-    product_ids = await order_client.add_products(products)
+    menu_item_ids = [first_id, *extra_ids]
+    quantities = [101, *[1] * len(extra_ids)]
     response = await order_client.client.post(
         "/api/v1/orders",
-        json=_order_payload(
-            [
-                {"product_id": product_ids[0], "quantity": 101},
-                *[
-                    {"product_id": product_id, "quantity": 1}
-                    for product_id in product_ids[1:]
-                ],
-            ]
-        ),
+        json=_order_payload(menu_item_ids, quantities=quantities),
     )
 
     assert response.status_code == 200
-    assert response.json()["total_minor"] == 20100
+    assert response.json()["items_total_minor"] == 2_010_000
     assert len(response.json()["items"]) == 101
-    assert await _stock_quantity(order_client.session_factory, product_ids[0]) == 0
+    assert response.json()["items"][0]["quantity"] == 101
 
 
-async def test_cancel_releases_stock_once_and_is_user_scoped(
+async def test_cancel_is_user_scoped_and_cancels_once(
     order_client: OrderTestClient,
     test_engine: AsyncEngine,
 ) -> None:
-    product_id = await order_client.add_product(name="Cancel", stock_quantity=5)
-    create_response = await order_client.client.post(
-        "/api/v1/orders",
-        json=_order_payload([{"product_id": product_id, "quantity": 3}]),
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
+    created = await order_client.client.post(
+        "/api/v1/orders", json=_order_payload([menu_item_id])
     )
-    order_id = create_response.json()["id"]
-    assert await _stock_quantity(order_client.session_factory, product_id) == 2
+    order_id = created.json()["id"]
 
     other_user_id = await _insert_other_user(test_engine)
     other_order_id = await _insert_order_for_user(
-        order_client.session_factory,
-        user_id=other_user_id,
+        order_client.session_factory, user_id=other_user_id
     )
     owner_list = await order_client.client.get("/api/v1/orders")
     assert [order["id"] for order in owner_list.json()["items"]] == [order_id]
 
-    other_user = User(
-        id=other_user_id,
-        auth0_sub="auth0|other-orders-test",
-        email="other-orders-test@example.com",
-        first_name="Other",
-        last_name=None,
-        created_at=datetime.now(UTC),
+    app.dependency_overrides[get_current_user] = _fixed_user(
+        User(
+            id=other_user_id,
+            auth0_sub="auth0|other-orders-test",
+            email="other-orders-test@example.com",
+            first_name="Other",
+            last_name=None,
+            created_at=datetime.now(UTC),
+        )
     )
-    app.dependency_overrides[get_current_user] = _fixed_user(other_user)
     try:
         hidden_order = await order_client.client.get(f"/api/v1/orders/{order_id}")
         hidden_cancel = await order_client.client.post(
@@ -389,18 +585,18 @@ async def test_cancel_releases_stock_once_and_is_user_scoped(
         other_list = await order_client.client.get("/api/v1/orders")
     finally:
         app.dependency_overrides[get_current_user] = _fixed_user(order_client.user)
+
     assert hidden_order.status_code == 404
     assert hidden_cancel.status_code == 404
     assert [order["id"] for order in other_list.json()["items"]] == [other_order_id]
-    assert await _stock_quantity(order_client.session_factory, product_id) == 2
 
     cancelled = await order_client.client.post(f"/api/v1/orders/{order_id}/cancel")
     replay = await order_client.client.post(f"/api/v1/orders/{order_id}/cancel")
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+    assert order_client.enqueued_tasks == [("send_order_cancelled_email", [order_id])]
     assert replay.status_code == 409
     assert replay.json() == {"detail": "order_not_pending"}
-    assert await _stock_quantity(order_client.session_factory, product_id) == 5
 
 
 async def _insert_other_user(test_engine: AsyncEngine) -> int:
@@ -429,9 +625,13 @@ async def _insert_order_for_user(
         order = Order(
             user_id=user_id,
             status="pending",
+            fulfillment_type="pickup",
+            fulfillment_date=a_served_day(),
+            contact=dict(PICKUP_CONTACT),
+            items_total_minor=0,
+            delivery_fee_minor=0,
             total_minor=0,
             currency="NGN",
-            shipping_address=_ADDRESS,
             created_at=now,
             updated_at=now,
         )
@@ -450,10 +650,10 @@ def _fixed_user(user: User):
 async def test_order_detail_exposes_only_safe_payment_fields(
     order_client: OrderTestClient,
 ) -> None:
-    product_id = await order_client.add_product(name="Payment summary")
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
     created = await order_client.client.post(
-        "/api/v1/orders",
-        json=_order_payload([{"product_id": product_id, "quantity": 1}]),
+        "/api/v1/orders", json=_order_payload([menu_item_id])
     )
     order_id = created.json()["id"]
     async with order_client.session_factory.begin() as session:
@@ -485,11 +685,11 @@ async def test_order_detail_exposes_only_safe_payment_fields(
 async def test_order_cursor_pagination_is_stable_and_invalid_cursor_is_400(
     order_client: OrderTestClient,
 ) -> None:
-    product_id = await order_client.add_product(name="Pagination")
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
     for _ in range(3):
         response = await order_client.client.post(
-            "/api/v1/orders",
-            json=_order_payload([{"product_id": product_id, "quantity": 1}]),
+            "/api/v1/orders", json=_order_payload([menu_item_id])
         )
         assert response.status_code == 200
 
@@ -510,60 +710,22 @@ async def test_order_cursor_pagination_is_stable_and_invalid_cursor_is_400(
     assert invalid.json() == {"detail": "invalid_cursor"}
 
 
-async def test_product_cursor_pagination_has_no_duplicates_or_gaps(
+async def test_concurrent_same_key_requests_create_one_order(
     order_client: OrderTestClient,
 ) -> None:
-    product_ids = [
-        await order_client.add_product(name=f"Page {index}") for index in range(3)
-    ]
-    first_page = await order_client.client.get("/api/v1/products?limit=2")
-    second_page = await order_client.client.get(
-        "/api/v1/products",
-        params={"limit": 2, "cursor": first_page.json()["next_cursor"]},
-    )
-    ids = [item["id"] for item in first_page.json()["items"]]
-    ids.extend(item["id"] for item in second_page.json()["items"])
-    assert ids == product_ids
-    assert len(ids) == len(set(ids))
-
-
-async def test_concurrent_orders_cannot_oversell_stock(
-    order_client: OrderTestClient,
-) -> None:
-    product_id = await order_client.add_product(name="Limited stock", stock_quantity=5)
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
     responses: list[httpx.Response] = []
-
-    async def place_order(index: int) -> None:
-        response = await order_client.client.post(
-            "/api/v1/orders",
-            json=_order_payload([{"product_id": product_id, "quantity": 2}]),
-            headers={"Idempotency-Key": f"stock-race-{index}"},
-        )
-        responses.append(response)
-
-    async with asyncio.TaskGroup() as task_group:
-        for index in range(6):
-            task_group.create_task(place_order(index))
-
-    assert sum(response.status_code == 200 for response in responses) == 2
-    assert sum(response.status_code == 409 for response in responses) == 4
-    assert await _stock_quantity(order_client.session_factory, product_id) == 1
-    assert await _order_count(order_client.session_factory, order_client.user_id) == 2
-
-
-async def test_concurrent_same_key_requests_create_one_order_and_reservation(
-    order_client: OrderTestClient,
-) -> None:
-    product_id = await order_client.add_product(name="Key race", stock_quantity=3)
-    responses: list[httpx.Response] = []
+    payload = _order_payload([menu_item_id], quantities=[2])
 
     async def place_order() -> None:
-        response = await order_client.client.post(
-            "/api/v1/orders",
-            json=_order_payload([{"product_id": product_id, "quantity": 2}]),
-            headers={"Idempotency-Key": "same-concurrent-key"},
+        responses.append(
+            await order_client.client.post(
+                "/api/v1/orders",
+                json=payload,
+                headers={"Idempotency-Key": "same-concurrent-key"},
+            )
         )
-        responses.append(response)
 
     async with asyncio.TaskGroup() as task_group:
         task_group.create_task(place_order())
@@ -571,17 +733,16 @@ async def test_concurrent_same_key_requests_create_one_order_and_reservation(
 
     assert all(response.status_code == 200 for response in responses)
     assert responses[0].json() == responses[1].json()
-    assert await _stock_quantity(order_client.session_factory, product_id) == 1
     assert await _order_count(order_client.session_factory, order_client.user_id) == 1
 
 
-async def test_concurrent_cancel_releases_stock_once(
+async def test_concurrent_cancel_cancels_once(
     order_client: OrderTestClient,
 ) -> None:
-    product_id = await order_client.add_product(name="Cancel race", stock_quantity=4)
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
     created = await order_client.client.post(
-        "/api/v1/orders",
-        json=_order_payload([{"product_id": product_id, "quantity": 3}]),
+        "/api/v1/orders", json=_order_payload([menu_item_id])
     )
     order_id = created.json()["id"]
     responses: list[httpx.Response] = []
@@ -595,6 +756,7 @@ async def test_concurrent_cancel_releases_stock_once(
         task_group.create_task(cancel())
         task_group.create_task(cancel())
 
-    assert sum(response.status_code == 200 for response in responses) == 1
-    assert sum(response.status_code == 409 for response in responses) == 1
-    assert await _stock_quantity(order_client.session_factory, product_id) == 4
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    async with order_client.session_factory() as session:
+        order_items = list(await session.scalars(select(OrderItem)))
+    assert len(order_items) == 1

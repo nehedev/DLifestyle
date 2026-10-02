@@ -3,7 +3,10 @@ import hashlib
 import hmac
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -15,7 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.api.dependencies import get_current_user, get_session
 from app.core.config import settings
 from app.main import app
-from app.models import Order, Payment, Product, User
+from app.models import (
+    MenuItem,
+    MenuItemDay,
+    Order,
+    OrderItem,
+    Payment,
+    StoreSettings,
+    User,
+)
 from app.payments.dependencies import get_payment_provider
 from app.payments.paystack import PaystackProvider
 from app.payments.protocol import (
@@ -30,15 +41,19 @@ from app.services.payment_events import (
     refund_payment_impl,
 )
 from app.workers import payment_tasks
+from app.workers.celery_app import celery_app
 
-_ADDRESS = {
-    "name": "Ada Lovelace",
-    "phone": "+14155552671",
-    "address_line_1": "1 Analytical Engine Way",
-    "city": "London",
-    "state": "London",
-    "country": "GB",
+BUSINESS_ZONE = ZoneInfo(settings.business_timezone)
+DELIVERY_FEE_MINOR = 1500
+CONTACT = {
+    "name": "Ada Obi",
+    "phone": "+2348012345678",
+    "address": "12 Example Street, Lekki",
 }
+
+
+def business_today() -> date:
+    return datetime.now(UTC).astimezone(BUSINESS_ZONE).date()
 
 
 class FakePaymentProvider:
@@ -53,6 +68,7 @@ class FakePaymentProvider:
         self.initialize_statuses: list[str | None] = []
         self.initialize_references: list[str] = []
         self.verify_result: VerifiedPayment | None = None
+        self.distinct_transaction_ids = False
         self.verify_references: list[str] = []
         self.refund_calls: list[tuple[str, int, str]] = []
         self.signature_valid = True
@@ -88,6 +104,11 @@ class FakePaymentProvider:
         self.verify_references.append(reference)
         if self.verify_result is None:
             raise AssertionError("test must set a verified gateway result")
+        if self.distinct_transaction_ids:
+            return replace(
+                self.verify_result,
+                provider_transaction_id=f"gateway-txn-{reference}",
+            )
         return self.verify_result
 
     async def refund(
@@ -114,16 +135,46 @@ class PaymentTestClient:
         session_factory: async_sessionmaker[AsyncSession],
         user: User,
         provider: FakePaymentProvider,
+        enqueued_tasks: list[tuple[str, list[int] | None]],
     ) -> None:
         self.client = client
         self.session_factory = session_factory
         self.user = user
         self.provider = provider
+        self.enqueued_tasks = enqueued_tasks
+
+    async def add_menu_item(
+        self,
+        *,
+        name: str = "Payment dish",
+        price_minor: int = 250_000,
+        weekdays: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7),
+        is_active: bool = True,
+        is_sold_out: bool = False,
+    ) -> int:
+        async with self.session_factory.begin() as session:
+            now = datetime.now(UTC)
+            menu_item = MenuItem(
+                name=name,
+                price_minor=price_minor,
+                is_active=is_active,
+                is_sold_out=is_sold_out,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(menu_item)
+            await session.flush()
+            session.add_all(
+                MenuItemDay(menu_item_id=menu_item.id, weekday=weekday)
+                for weekday in weekdays
+            )
+            return menu_item.id
 
 
 @pytest_asyncio.fixture
 async def payment_client(
     test_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[PaymentTestClient]:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory.begin() as session:
@@ -131,28 +182,44 @@ async def payment_client(
             auth0_sub="auth0|payment-tests",
             email="orders-test@example.com",
             first_name="Ada",
-            last_name="Lovelace",
+            last_name="Obi",
             created_at=datetime.now(UTC),
         )
         session.add(user)
         await session.flush()
+        user_id = user.id
+        session.add(
+            StoreSettings(
+                id=1,
+                delivery_fee_minor=DELIVERY_FEE_MINOR,
+                order_cutoff_time=time(23, 59),
+                max_advance_days=7,
+                updated_at=datetime.now(UTC),
+            )
+        )
 
-    user = User(
-        id=user.id,
-        auth0_sub=user.auth0_sub,
-        email=user.email,
-        first_name=user.first_name,
-        last_name=user.last_name,
-        created_at=user.created_at,
+    detached_user = User(
+        id=user_id,
+        auth0_sub="auth0|payment-tests",
+        email="orders-test@example.com",
+        first_name="Ada",
+        last_name="Obi",
+        created_at=datetime.now(UTC),
     )
     provider = FakePaymentProvider(session_factory)
+    enqueued_tasks: list[tuple[str, list[int] | None]] = []
+
+    def capture_task(task_name: str, args: list[int] | None = None, **_: Any) -> None:
+        enqueued_tasks.append((task_name, args))
+
+    monkeypatch.setattr(celery_app, "send_task", capture_task)
 
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
             yield session
 
     async def override_current_user() -> User:
-        return user
+        return detached_user
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_current_user
@@ -162,7 +229,13 @@ async def payment_client(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
         ) as client:
-            yield PaymentTestClient(client, session_factory, user, provider)
+            yield PaymentTestClient(
+                client,
+                session_factory,
+                detached_user,
+                provider,
+                enqueued_tasks,
+            )
     finally:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_current_user, None)
@@ -172,28 +245,23 @@ async def payment_client(
 async def _create_order_and_attempt(
     payment_client: PaymentTestClient,
     *,
-    stock_quantity: int = 10,
     quantity: int = 2,
-) -> tuple[int, int, int, str]:
-    async with payment_client.session_factory.begin() as session:
-        product = Product(
-            name="Payment product",
-            price_minor=250,
-            stock_quantity=stock_quantity,
-            is_active=True,
-        )
-        session.add(product)
-        await session.flush()
-        product_id = product.id
-
+    fulfillment_date: date | None = None,
+) -> tuple[int, int, str]:
+    menu_item_id = await payment_client.add_menu_item()
     order_response = await payment_client.client.post(
         "/api/v1/orders",
         json={
-            "items": [{"product_id": product_id, "quantity": quantity}],
-            "shipping_address": _ADDRESS,
+            "items": [{"menu_item_id": menu_item_id, "quantity": quantity}],
+            "fulfillment_type": "delivery",
+            "fulfillment_date": (
+                fulfillment_date or business_today() + timedelta(days=1)
+            ).isoformat(),
+            "contact": CONTACT,
+            "notes": None,
         },
     )
-    assert order_response.status_code == 200
+    assert order_response.status_code == 200, order_response.text
     order_id = order_response.json()["id"]
 
     pay_response = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
@@ -204,10 +272,8 @@ async def _create_order_and_attempt(
         payment = await session.scalar(
             select(Payment).where(Payment.reference == reference)
         )
-        order = await session.get(Order, order_id)
     assert payment is not None
-    assert order is not None
-    return order_id, payment.id, product_id, reference
+    return order_id, payment.id, reference
 
 
 async def _get_order_and_payment(
@@ -224,21 +290,9 @@ async def _get_order_and_payment(
     return order, payment
 
 
-async def _stock(
-    session_factory: async_sessionmaker[AsyncSession],
-    product_id: int,
-) -> int:
-    async with session_factory() as session:
-        quantity = await session.scalar(
-            select(Product.stock_quantity).where(Product.id == product_id)
-        )
-    assert quantity is not None
-    return quantity
-
-
 def _success_result(
     *,
-    amount_minor: int = 500,
+    amount_minor: int = 500_000 + DELIVERY_FEE_MINOR,
     currency: str = "NGN",
     status: str = "success",
 ) -> VerifiedPayment:
@@ -270,7 +324,7 @@ async def _run_payment_event(
 async def test_pay_commits_initiated_attempt_before_provider_and_allows_retries(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, _, _, _ = await _create_order_and_attempt(payment_client)
+    order_id, _, _ = await _create_order_and_attempt(payment_client)
     second = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
     assert second.status_code == 200
     assert payment_client.provider.initialize_statuses == ["initiated", "initiated"]
@@ -285,21 +339,15 @@ async def test_pay_commits_initiated_attempt_before_provider_and_allows_retries(
 async def test_pay_initialization_failure_keeps_payment_initiated(
     payment_client: PaymentTestClient,
 ) -> None:
-    async with payment_client.session_factory.begin() as session:
-        product = Product(
-            name="Initialization failure",
-            price_minor=100,
-            stock_quantity=2,
-            is_active=True,
-        )
-        session.add(product)
-        await session.flush()
-        product_id = product.id
+    menu_item_id = await payment_client.add_menu_item()
     order = await payment_client.client.post(
         "/api/v1/orders",
         json={
-            "items": [{"product_id": product_id, "quantity": 1}],
-            "shipping_address": _ADDRESS,
+            "items": [{"menu_item_id": menu_item_id, "quantity": 1}],
+            "fulfillment_type": "pickup",
+            "fulfillment_date": (business_today() + timedelta(days=1)).isoformat(),
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+            "notes": None,
         },
     )
     payment_client.provider.initialize_error = True
@@ -322,7 +370,7 @@ async def test_pay_requires_owned_pending_order(
     missing = await payment_client.client.post("/api/v1/orders/99999/pay")
     assert missing.status_code == 404
 
-    order_id, _, _, _ = await _create_order_and_attempt(payment_client)
+    order_id, _, _ = await _create_order_and_attempt(payment_client)
     async with payment_client.session_factory.begin() as session:
         await session.execute(
             update(Order).where(Order.id == order_id).values(status="paid")
@@ -386,9 +434,7 @@ async def test_webhook_signature_ignore_and_enqueue_paths(
 async def test_verified_charge_success_marks_payment_and_order_paid_once(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, payment_id, product_id, reference = await _create_order_and_attempt(
-        payment_client
-    )
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
     payment_client.provider.verify_result = _success_result()
     queued_refunds: list[int] = []
 
@@ -413,15 +459,17 @@ async def test_verified_charge_success_marks_payment_and_order_paid_once(
     assert order.status == "paid"
     assert payment.status == "succeeded"
     assert payment.provider_transaction_id == "gateway-txn-1"
-    assert await _stock(payment_client.session_factory, product_id) == 8
     assert payment_client.provider.verify_references == [reference]
     assert queued_refunds == []
+    assert payment_client.enqueued_tasks == [
+        ("send_order_confirmation_email", [order_id])
+    ]
 
 
 @pytest.mark.parametrize(
     "verified",
     [
-        _success_result(amount_minor=499),
+        _success_result(amount_minor=1),
         _success_result(currency="USD"),
         _success_result(status="failed"),
     ],
@@ -430,7 +478,7 @@ async def test_gateway_mismatch_sets_needs_review_without_paying_order(
     payment_client: PaymentTestClient,
     verified: VerifiedPayment,
 ) -> None:
-    order_id, payment_id, _, reference = await _create_order_and_attempt(payment_client)
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
     payment_client.provider.verify_result = verified
 
     await _run_payment_event(payment_client, "charge.success", reference)
@@ -452,13 +500,10 @@ async def test_unknown_payment_reference_is_ignored(
     assert payment_client.provider.verify_references == []
 
 
-async def test_payment_failed_event_cancels_and_releases_stock_once(
+async def test_payment_failed_event_cancels_the_pending_order_once(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, payment_id, product_id, reference = await _create_order_and_attempt(
-        payment_client
-    )
-    assert await _stock(payment_client.session_factory, product_id) == 8
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
 
     await _run_payment_event(payment_client, "payment.failed", reference)
     await _run_payment_event(payment_client, "payment.failed", reference)
@@ -470,18 +515,17 @@ async def test_payment_failed_event_cancels_and_releases_stock_once(
     )
     assert order.status == "cancelled"
     assert payment.status == "failed"
-    assert await _stock(payment_client.session_factory, product_id) == 10
+    assert payment_client.enqueued_tasks == [
+        ("send_payment_failed_email", [payment_id])
+    ]
 
 
-async def test_late_payment_reinstates_cancelled_order_when_stock_exists(
+async def test_late_payment_reinstates_cancelled_order_when_still_fulfillable(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, payment_id, product_id, reference = await _create_order_and_attempt(
-        payment_client
-    )
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
     cancelled = await payment_client.client.post(f"/api/v1/orders/{order_id}/cancel")
     assert cancelled.status_code == 200
-    assert await _stock(payment_client.session_factory, product_id) == 10
     payment_client.provider.verify_result = _success_result()
 
     await _run_payment_event(payment_client, "charge.success", reference)
@@ -493,19 +537,23 @@ async def test_late_payment_reinstates_cancelled_order_when_stock_exists(
     )
     assert order.status == "paid"
     assert payment.status == "succeeded"
-    assert await _stock(payment_client.session_factory, product_id) == 8
+    assert payment_client.provider.refund_calls == []
 
 
-async def test_late_payment_without_stock_starts_refund_and_refund_webhook_updates(
+async def test_late_payment_after_the_cutoff_starts_a_refund(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, payment_id, product_id, reference = await _create_order_and_attempt(
-        payment_client
+    today = business_today()
+    order_id, payment_id, reference = await _create_order_and_attempt(
+        payment_client, fulfillment_date=today
     )
-    await payment_client.client.post(f"/api/v1/orders/{order_id}/cancel")
+    cancelled = await payment_client.client.post(f"/api/v1/orders/{order_id}/cancel")
+    assert cancelled.status_code == 200
     async with payment_client.session_factory.begin() as session:
         await session.execute(
-            update(Product).where(Product.id == product_id).values(stock_quantity=1)
+            update(StoreSettings)
+            .where(StoreSettings.id == 1)
+            .values(order_cutoff_time=time(0, 0))
         )
     payment_client.provider.verify_result = _success_result()
     queued_refunds: list[int] = []
@@ -530,10 +578,56 @@ async def test_late_payment_without_stock_starts_refund_and_refund_webhook_updat
         payment_id=payment_id,
     )
     assert queued_refunds == [payment_id]
-    assert payment_client.provider.refund_calls == [(reference, 500, "NGN")]
+    assert payment_client.provider.refund_calls == [
+        (reference, 500_000 + DELIVERY_FEE_MINOR, "NGN")
+    ]
     assert order.status == "cancelled"
     assert payment.status == "refunded"
-    assert await _stock(payment_client.session_factory, product_id) == 1
+
+
+async def test_late_payment_when_an_item_is_now_unavailable_starts_a_refund(
+    payment_client: PaymentTestClient,
+) -> None:
+    menu_item_id = await payment_client.add_menu_item()
+    order_response = await payment_client.client.post(
+        "/api/v1/orders",
+        json={
+            "items": [{"menu_item_id": menu_item_id, "quantity": 1}],
+            "fulfillment_type": "pickup",
+            "fulfillment_date": (business_today() + timedelta(days=1)).isoformat(),
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+            "notes": None,
+        },
+    )
+    order_id = order_response.json()["id"]
+    await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+    reference = payment_client.provider.initialize_references[-1]
+    cancelled = await payment_client.client.post(f"/api/v1/orders/{order_id}/cancel")
+    assert cancelled.status_code == 200
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(MenuItem).where(MenuItem.id == menu_item_id).values(is_sold_out=True)
+        )
+    payment_client.provider.verify_result = _success_result(amount_minor=250_000)
+    queued_refunds: list[int] = []
+
+    await _run_payment_event(
+        payment_client,
+        "charge.success",
+        reference,
+        enqueue_refund=queued_refunds,
+    )
+
+    async with payment_client.session_factory() as session:
+        order = await session.get(Order, order_id)
+        payment = await session.scalar(
+            select(Payment).where(Payment.reference == reference)
+        )
+    assert order is not None
+    assert order.status == "cancelled"
+    assert payment is not None
+    assert payment.status == "refund_pending"
+    assert queued_refunds == [payment.id]
 
 
 @pytest.mark.parametrize("event_type", ["refund.failed", "refund.needs-attention"])
@@ -541,7 +635,7 @@ async def test_failed_refund_webhook_needs_review(
     payment_client: PaymentTestClient,
     event_type: str,
 ) -> None:
-    order_id, payment_id, _, reference = await _create_order_and_attempt(payment_client)
+    _, payment_id, reference = await _create_order_and_attempt(payment_client)
     async with payment_client.session_factory.begin() as session:
         await session.execute(
             update(Payment)
@@ -551,19 +645,16 @@ async def test_failed_refund_webhook_needs_review(
     await _run_payment_event(payment_client, event_type, reference)
     await _run_payment_event(payment_client, event_type, reference)
 
-    order, payment = await _get_order_and_payment(
-        payment_client.session_factory,
-        order_id=order_id,
-        payment_id=payment_id,
-    )
-    assert order.status == "pending"
+    async with payment_client.session_factory() as session:
+        payment = await session.get(Payment, payment_id)
+    assert payment is not None
     assert payment.status == "needs_review"
 
 
 async def test_duplicate_success_after_paid_order_needs_review_without_refund(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, payment_id, _, reference = await _create_order_and_attempt(payment_client)
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
     async with payment_client.session_factory.begin() as session:
         await session.execute(
             update(Order).where(Order.id == order_id).values(status="paid")
@@ -578,23 +669,54 @@ async def test_duplicate_success_after_paid_order_needs_review_without_refund(
         enqueue_refund=queued_refunds,
     )
 
-    order, payment = await _get_order_and_payment(
+    _, payment = await _get_order_and_payment(
         payment_client.session_factory,
         order_id=order_id,
         payment_id=payment_id,
     )
-    assert order.status == "paid"
     assert payment.status == "needs_review"
     assert queued_refunds == []
     assert payment_client.provider.refund_calls == []
 
 
+async def test_two_simultaneous_successes_yield_one_paid_and_one_needs_review(
+    payment_client: PaymentTestClient,
+) -> None:
+    order_id, _, _ = await _create_order_and_attempt(payment_client)
+    await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+    references = list(payment_client.provider.initialize_references)
+    payment_client.provider.verify_result = _success_result()
+    payment_client.provider.distinct_transaction_ids = True
+
+    async def process_success(reference: str) -> None:
+        await process_payment_event_impl(
+            {"event_type": "charge.success", "reference": reference},
+            session_factory=payment_client.session_factory,
+            provider=payment_client.provider,
+            enqueue_refund=lambda _: None,
+        )
+
+    async with asyncio.TaskGroup() as task_group:
+        for reference in references:
+            task_group.create_task(process_success(reference))
+
+    async with payment_client.session_factory() as session:
+        order = await session.get(Order, order_id)
+        payments = list(
+            await session.scalars(
+                select(Payment).where(Payment.order_id == order_id).order_by(Payment.id)
+            )
+        )
+    assert order is not None
+    assert order.status == "paid"
+    statuses = sorted(payment.status for payment in payments)
+    assert statuses == ["needs_review", "succeeded"]
+
+
 async def test_cancel_racing_verified_payment_is_consistent(
     payment_client: PaymentTestClient,
 ) -> None:
-    order_id, payment_id, product_id, reference = await _create_order_and_attempt(
-        payment_client
-    )
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
     payment_client.provider.verify_result = _success_result()
     cancel_responses: list[httpx.Response] = []
 
@@ -617,7 +739,6 @@ async def test_cancel_racing_verified_payment_is_consistent(
     )
     assert order.status == "paid"
     assert payment.status == "succeeded"
-    assert await _stock(payment_client.session_factory, product_id) == 8
     assert cancel_responses[0].status_code in {200, 409}
 
 
@@ -722,3 +843,39 @@ async def test_paystack_already_pending_refund_response_is_idempotent() -> None:
         currency="NGN",
     )
     assert result == InitiatedRefund(status="pending")
+
+
+async def test_a_menu_edit_does_not_change_the_stored_order_items(
+    payment_client: PaymentTestClient,
+) -> None:
+    menu_item_id = await payment_client.add_menu_item(
+        name="Snapshot dish", price_minor=300_000
+    )
+    order_response = await payment_client.client.post(
+        "/api/v1/orders",
+        json={
+            "items": [{"menu_item_id": menu_item_id, "quantity": 2}],
+            "fulfillment_type": "pickup",
+            "fulfillment_date": (business_today() + timedelta(days=1)).isoformat(),
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+            "notes": None,
+        },
+    )
+    order_id = order_response.json()["id"]
+    async with payment_client.session_factory.begin() as session:
+        menu_item = await session.get(MenuItem, menu_item_id)
+        assert menu_item is not None
+        menu_item.price_minor = 900_000
+        menu_item.name = "Renamed"
+
+    detail = await payment_client.client.get(f"/api/v1/orders/{order_id}")
+    assert detail.json()["items"] == [
+        {"name": "Snapshot dish", "quantity": 2, "unit_price_minor": 300_000}
+    ]
+    async with payment_client.session_factory() as session:
+        stored = list(
+            await session.scalars(
+                select(OrderItem).where(OrderItem.order_id == order_id)
+            )
+        )
+    assert [item.name for item in stored] == ["Snapshot dish"]

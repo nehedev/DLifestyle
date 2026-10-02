@@ -6,13 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.cursors import (
-    decode_order_cursor,
-    decode_product_cursor,
-    encode_order_cursor,
-    encode_product_cursor,
-)
-from app.models import Order, OrderItem, Payment, Product, User
+from app.core.cursors import decode_order_cursor, encode_order_cursor
+from app.models import Order, OrderItem, Payment, User
 from app.schemas.orders import (
     CursorPage,
     OrderCreate,
@@ -21,14 +16,23 @@ from app.schemas.orders import (
     OrderResponse,
     PaymentSummary,
 )
-from app.schemas.products import ProductResponse
+from app.services.menu import find_unavailable_menu_item_ids, load_menu_items_with_days
+from app.services.store_settings import (
+    is_ordering_open,
+    require_store_settings,
+)
+from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
 
-class UnavailableProducts(Exception):
-    def __init__(self, product_ids: list[int]) -> None:
-        self.product_ids = product_ids
+class OrderingClosedForDate(Exception):
+    pass
+
+
+class UnavailableMenuItems(Exception):
+    def __init__(self, menu_item_ids: list[int]) -> None:
+        self.menu_item_ids = menu_item_ids
 
 
 class IdempotencyKeyReused(Exception):
@@ -41,49 +45,6 @@ class OrderNotFound(Exception):
 
 class OrderNotCancellable(Exception):
     pass
-
-
-def _product_response(product: Product) -> ProductResponse:
-    return ProductResponse(
-        id=product.id,
-        name=product.name,
-        price_minor=product.price_minor,
-        stock_quantity=product.stock_quantity,
-        is_active=product.is_active,
-    )
-
-
-async def list_products(
-    session: AsyncSession,
-    *,
-    limit: int,
-    cursor: str | None,
-) -> CursorPage[ProductResponse]:
-    statement = select(Product).where(Product.is_active.is_(True))
-    if cursor is not None:
-        statement = statement.where(Product.id > decode_product_cursor(cursor))
-    products = list(
-        await session.scalars(statement.order_by(Product.id).limit(limit + 1))
-    )
-    has_next = len(products) > limit
-    page = products[:limit]
-    return CursorPage(
-        items=[_product_response(product) for product in page],
-        next_cursor=encode_product_cursor(page[-1].id) if has_next and page else None,
-    )
-
-
-async def get_product(
-    session: AsyncSession,
-    product_id: int,
-) -> ProductResponse | None:
-    product = await session.scalar(
-        select(Product).where(
-            Product.id == product_id,
-            Product.is_active.is_(True),
-        )
-    )
-    return _product_response(product) if product is not None else None
 
 
 async def _get_idempotent_order(
@@ -100,30 +61,62 @@ async def _get_idempotent_order(
     )
 
 
+def _stored_order_payload(order: Order, order_items: list[OrderItem]) -> tuple:
+    return (
+        sorted((item.menu_item_id, item.quantity) for item in order_items),
+        order.fulfillment_type,
+        order.fulfillment_date,
+        order.contact,
+        order.notes,
+    )
+
+
+def _requested_order_payload(request: OrderCreate) -> tuple:
+    return (
+        sorted((item.menu_item_id, item.quantity) for item in request.items),
+        request.fulfillment_type,
+        request.fulfillment_date,
+        request.contact.model_dump(),
+        request.notes,
+    )
+
+
+async def _load_order_items(
+    session: AsyncSession,
+    order_id: int,
+) -> list[OrderItem]:
+    return list(
+        await session.scalars(
+            select(OrderItem)
+            .where(OrderItem.order_id == order_id)
+            .order_by(OrderItem.menu_item_id)
+        )
+    )
+
+
 async def _order_response(
     session: AsyncSession,
     order: Order,
     *,
     include_payments: bool = False,
 ) -> OrderResponse | OrderDetailResponse:
-    order_items = list(
-        await session.scalars(
-            select(OrderItem)
-            .where(OrderItem.order_id == order.id)
-            .order_by(OrderItem.product_id)
-        )
-    )
+    order_items = await _load_order_items(session, order.id)
     response_values = {
         "id": order.id,
         "status": order.status,
+        "fulfillment_type": order.fulfillment_type,
+        "fulfillment_date": order.fulfillment_date,
+        "contact": order.contact,
+        "notes": order.notes,
+        "items_total_minor": order.items_total_minor,
+        "delivery_fee_minor": order.delivery_fee_minor,
         "total_minor": order.total_minor,
         "currency": order.currency,
-        "shipping_address": order.shipping_address,
         "created_at": order.created_at,
         "updated_at": order.updated_at,
         "items": [
             OrderItemResponse(
-                product_id=item.product_id,
+                name=item.name,
                 quantity=item.quantity,
                 unit_price_minor=item.unit_price_minor,
             )
@@ -157,26 +150,16 @@ async def _check_idempotent_payload(
     order: Order,
     request: OrderCreate,
 ) -> OrderResponse:
-    existing_items = list(
-        await session.execute(
-            select(OrderItem.product_id, OrderItem.quantity).where(
-                OrderItem.order_id == order.id
-            )
-        )
-    )
-    existing_payload = sorted((row.product_id, row.quantity) for row in existing_items)
-    requested_payload = sorted(
-        (item.product_id, item.quantity) for item in request.items
-    )
-    requested_address = request.shipping_address.model_dump()
-    if (
-        existing_payload != requested_payload
-        or order.shipping_address != requested_address
-    ):
+    order_items = await _load_order_items(session, order.id)
+    if _stored_order_payload(order, order_items) != _requested_order_payload(request):
         raise IdempotencyKeyReused
     response = await _order_response(session, order)
     assert isinstance(response, OrderResponse)
     return response
+
+
+def _order_items_by_id(request: OrderCreate) -> dict[int, int]:
+    return {item.menu_item_id: item.quantity for item in request.items}
 
 
 async def create_order(
@@ -186,6 +169,8 @@ async def create_order(
     request: OrderCreate,
     idempotency_key: str | None,
 ) -> OrderResponse:
+    store_settings = await require_store_settings(session)
+
     if idempotency_key is not None:
         existing_order = await _get_idempotent_order(
             session,
@@ -195,32 +180,46 @@ async def create_order(
         if existing_order is not None:
             return await _check_idempotent_payload(session, existing_order, request)
 
-    requested_ids = [item.product_id for item in request.items]
-    products = list(
-        await session.scalars(
-            select(Product).where(
-                Product.id.in_(requested_ids),
-                Product.is_active.is_(True),
-            )
-        )
-    )
-    products_by_id = {product.id: product for product in products}
-    unavailable_ids = sorted(set(requested_ids) - products_by_id.keys())
-    if unavailable_ids:
-        await session.rollback()
-        raise UnavailableProducts(unavailable_ids)
-
-    total_minor = sum(
-        products_by_id[item.product_id].price_minor * item.quantity
-        for item in request.items
-    )
     now = datetime.now(UTC)
+    if not is_ordering_open(
+        store_settings,
+        fulfillment_date=request.fulfillment_date,
+        now=now,
+    ):
+        raise OrderingClosedForDate
+
+    weekday = request.fulfillment_date.isoweekday()
+    unavailable_menu_item_ids = await find_unavailable_menu_item_ids(
+        session,
+        _order_items_by_id(request),
+        weekday=weekday,
+    )
+    if unavailable_menu_item_ids:
+        raise UnavailableMenuItems(unavailable_menu_item_ids)
+
+    menu_items = await load_menu_items_with_days(session, _order_items_by_id(request))
+    menu_items_by_id = {menu_item.id: menu_item for menu_item in menu_items}
+    quantities = _order_items_by_id(request)
+    items_total_minor = sum(
+        menu_items_by_id[menu_item_id].price_minor * quantity
+        for menu_item_id, quantity in quantities.items()
+    )
+    delivery_fee_minor = (
+        store_settings.delivery_fee_minor
+        if request.fulfillment_type == "delivery"
+        else 0
+    )
     order = Order(
         user_id=user.id,
         status="pending",
-        total_minor=total_minor,
+        fulfillment_type=request.fulfillment_type,
+        fulfillment_date=request.fulfillment_date,
+        contact=request.contact.model_dump(),
+        notes=request.notes,
+        items_total_minor=items_total_minor,
+        delivery_fee_minor=delivery_fee_minor,
+        total_minor=items_total_minor + delivery_fee_minor,
         currency=settings.currency,
-        shipping_address=request.shipping_address.model_dump(),
         idempotency_key=idempotency_key,
         created_at=now,
         updated_at=now,
@@ -241,33 +240,15 @@ async def create_order(
             raise
         return await _check_idempotent_payload(session, existing_order, request)
 
-    unavailable_ids = []
-    for item in sorted(request.items, key=lambda requested: requested.product_id):
-        result = await session.execute(
-            update(Product)
-            .where(
-                Product.id == item.product_id,
-                Product.is_active.is_(True),
-                Product.stock_quantity >= item.quantity,
-            )
-            .values(stock_quantity=Product.stock_quantity - item.quantity)
-            .returning(Product.id)
-        )
-        if result.scalar_one_or_none() != item.product_id:
-            unavailable_ids.append(item.product_id)
-
-    if unavailable_ids:
-        await session.rollback()
-        raise UnavailableProducts(unavailable_ids)
-
     session.add_all(
         OrderItem(
             order_id=order.id,
-            product_id=item.product_id,
-            quantity=item.quantity,
-            unit_price_minor=products_by_id[item.product_id].price_minor,
+            menu_item_id=menu_item_id,
+            name=menu_items_by_id[menu_item_id].name,
+            quantity=quantity,
+            unit_price_minor=menu_items_by_id[menu_item_id].price_minor,
         )
-        for item in request.items
+        for menu_item_id, quantity in sorted(quantities.items())
     )
     await session.commit()
     response = await _order_response(session, order)
@@ -336,15 +317,6 @@ async def cancel_order(
     user_id: int,
     order_id: int,
 ) -> OrderResponse:
-    order_items = list(
-        await session.scalars(
-            select(OrderItem)
-            .join(Order, Order.id == OrderItem.order_id)
-            .where(Order.id == order_id, Order.user_id == user_id)
-            .order_by(OrderItem.product_id)
-        )
-    )
-    now = datetime.now(UTC)
     transition = await session.execute(
         update(Order)
         .where(
@@ -352,7 +324,7 @@ async def cancel_order(
             Order.user_id == user_id,
             Order.status == "pending",
         )
-        .values(status="cancelled", updated_at=now)
+        .values(status="cancelled", updated_at=datetime.now(UTC))
         .returning(Order.id)
     )
     if transition.scalar_one_or_none() != order_id:
@@ -364,19 +336,9 @@ async def cancel_order(
             raise OrderNotFound
         raise OrderNotCancellable
 
-    for item in order_items:
-        result = await session.execute(
-            update(Product)
-            .where(Product.id == item.product_id)
-            .values(stock_quantity=Product.stock_quantity + item.quantity)
-            .returning(Product.id)
-        )
-        if result.scalar_one_or_none() != item.product_id:
-            await session.rollback()
-            raise RuntimeError("Order item references a missing product")
-
     await session.commit()
     logger.info("order.user_cancelled")
+    celery_app.send_task("send_order_cancelled_email", args=[order_id])
     order = await session.scalar(
         select(Order).where(Order.id == order_id, Order.user_id == user_id)
     )

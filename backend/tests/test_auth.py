@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.main import app
 from app.models import User
+from app.workers.celery_app import celery_app
 
 _KEY_ID = "ficmart-auth-test-key"
 
@@ -38,6 +39,7 @@ class AuthTestClient:
     private_key: RSAPrivateKey
     jwks_requests: list[httpx.Request]
     jwks_status: list[int]
+    enqueued_tasks: list[tuple[str, list[Any] | None]]
 
     def token(
         self,
@@ -94,6 +96,16 @@ async def auth_client(
     }
     jwks_requests: list[httpx.Request] = []
     jwks_status = [200]
+    enqueued_tasks: list[tuple[str, list[Any] | None]] = []
+
+    def capture_task(
+        task_name: str,
+        args: list[Any] | None = None,
+        **_: Any,
+    ) -> None:
+        enqueued_tasks.append((task_name, args))
+
+    monkeypatch.setattr(celery_app, "send_task", capture_task)
 
     def handle_jwks(request: httpx.Request) -> httpx.Response:
         jwks_requests.append(request)
@@ -120,7 +132,13 @@ async def auth_client(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
         ) as client:
-            yield AuthTestClient(client, private_key, jwks_requests, jwks_status)
+            yield AuthTestClient(
+                client,
+                private_key,
+                jwks_requests,
+                jwks_status,
+                enqueued_tasks,
+            )
     finally:
         app.dependency_overrides.pop(get_session, None)
 
@@ -167,6 +185,7 @@ async def test_me_provisions_and_syncs_user(
     assert first_profile["first_name"] == "Alice"
     assert first_profile["last_name"] == "Lovelace"
     assert await _user_count(test_engine) == 1
+    assert auth_client.enqueued_tasks == [("send_welcome_email", [first_profile["id"]])]
 
     changed_claims = {
         settings.auth0_email_claim: "updated@example.com",
@@ -185,6 +204,7 @@ async def test_me_provisions_and_syncs_user(
         "last_name": "Byron",
     }
     assert len(auth_client.jwks_requests) == 1
+    assert len(auth_client.enqueued_tasks) == 1
 
 
 @pytest.mark.parametrize(
@@ -381,3 +401,6 @@ async def test_concurrent_first_requests_create_one_user(
     assert responses[0].json()["id"] == responses[1].json()["id"]
     assert await _user_count(test_engine) == 1
     assert len(auth_client.jwks_requests) == 1
+    assert auth_client.enqueued_tasks == [
+        ("send_welcome_email", [responses[0].json()["id"]])
+    ]

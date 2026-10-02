@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models import User
+from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ async def resolve_current_user(
     if inserted_user is not None:
         await session.commit()
         logger.info("user.provisioned")
-        # TODO(Milestone 6): enqueue the welcome email after provisioning commits.
+        celery_app.send_task("send_welcome_email", args=[inserted_user.id])
         return inserted_user
 
     user = await session.scalar(select(User).where(User.auth0_sub == auth0_sub))
