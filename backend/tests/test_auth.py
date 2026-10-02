@@ -1,0 +1,383 @@
+import asyncio
+import base64
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+import jwt
+import pytest
+import pytest_asyncio
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from app.core import auth0
+from app.core.auth0 import Auth0TokenVerifier
+from app.core.config import settings
+from app.db.session import get_session
+from app.main import app
+from app.models import User
+
+_KEY_ID = "ficmart-auth-test-key"
+
+
+def _base64url_integer(value: int) -> str:
+    encoded = base64.urlsafe_b64encode(
+        value.to_bytes((value.bit_length() + 7) // 8, "big")
+    )
+    return encoded.rstrip(b"=").decode("ascii")
+
+
+@dataclass
+class AuthTestClient:
+    client: AsyncClient
+    private_key: RSAPrivateKey
+    jwks_requests: list[httpx.Request]
+    jwks_status: list[int]
+
+    def token(
+        self,
+        overrides: Mapping[str, Any] | None = None,
+        *,
+        remove_claims: tuple[str, ...] = (),
+    ) -> str:
+        now = datetime.now(UTC)
+        claims: dict[str, Any] = {
+            "iss": f"https://{settings.auth0_domain.rstrip('/')}/",
+            "aud": settings.auth0_audience,
+            "sub": "auth0|alice",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            settings.auth0_email_claim: "alice@example.com",
+            settings.auth0_first_name_claim: "Alice",
+            settings.auth0_last_name_claim: "Lovelace",
+        }
+        if overrides is not None:
+            claims.update(overrides)
+        for claim_name in remove_claims:
+            claims.pop(claim_name, None)
+        return jwt.encode(
+            claims,
+            self.private_key,
+            algorithm="RS256",
+            headers={"kid": _KEY_ID},
+        )
+
+
+@pytest.fixture(scope="module")
+def private_key() -> RSAPrivateKey:
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest_asyncio.fixture
+async def auth_client(
+    test_engine: AsyncEngine,
+    private_key: RSAPrivateKey,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[AuthTestClient]:
+    public_numbers = private_key.public_key().public_numbers()
+    jwks_document = {
+        "keys": [
+            {
+                "kty": "RSA",
+                "use": "sig",
+                "alg": "RS256",
+                "kid": _KEY_ID,
+                "n": _base64url_integer(public_numbers.n),
+                "e": _base64url_integer(public_numbers.e),
+            }
+        ]
+    }
+    jwks_requests: list[httpx.Request] = []
+    jwks_status = [200]
+
+    def handle_jwks(request: httpx.Request) -> httpx.Response:
+        jwks_requests.append(request)
+        return httpx.Response(jwks_status[0], json=jwks_document)
+
+    verifier = Auth0TokenVerifier(
+        domain=settings.auth0_domain,
+        audience=settings.auth0_audience,
+        cache_ttl_seconds=settings.jwks_cache_ttl_seconds,
+        timeout_seconds=settings.jwks_timeout_seconds,
+        transport=httpx.MockTransport(handle_jwks),
+    )
+    monkeypatch.setattr(auth0, "token_verifier", verifier)
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+
+    async def override_get_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            yield AuthTestClient(client, private_key, jwks_requests, jwks_status)
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+
+
+async def _user_count(test_engine: AsyncEngine) -> int:
+    async with test_engine.connect() as connection:
+        count = await connection.scalar(select(func.count()).select_from(User))
+    assert count is not None
+    return count
+
+
+async def _insert_user(
+    test_engine: AsyncEngine,
+    *,
+    auth0_sub: str,
+    email: str,
+    first_name: str,
+) -> None:
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory.begin() as session:
+        session.add(
+            User(
+                auth0_sub=auth0_sub,
+                email=email,
+                first_name=first_name,
+                last_name=None,
+                created_at=datetime.now(UTC),
+            )
+        )
+
+
+async def test_me_provisions_and_syncs_user(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    first_response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {auth_client.token()}"},
+    )
+    assert first_response.status_code == 200
+    first_profile = first_response.json()
+    assert set(first_profile) == {"id", "email", "first_name", "last_name"}
+    assert first_profile["email"] == "alice@example.com"
+    assert first_profile["first_name"] == "Alice"
+    assert first_profile["last_name"] == "Lovelace"
+    assert await _user_count(test_engine) == 1
+
+    changed_claims = {
+        settings.auth0_email_claim: "updated@example.com",
+        settings.auth0_first_name_claim: "Ada",
+        settings.auth0_last_name_claim: "Byron",
+    }
+    second_response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {auth_client.token(changed_claims)}"},
+    )
+    assert second_response.status_code == 200
+    assert second_response.json() == {
+        "id": first_profile["id"],
+        "email": "updated@example.com",
+        "first_name": "Ada",
+        "last_name": "Byron",
+    }
+    assert len(auth_client.jwks_requests) == 1
+
+
+@pytest.mark.parametrize(
+    "missing_claim",
+    [settings.auth0_email_claim, settings.auth0_first_name_claim],
+)
+async def test_required_profile_claims_are_rejected(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+    missing_claim: str,
+) -> None:
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={
+            "Authorization": f"Bearer "
+            f"{auth_client.token(remove_claims=(missing_claim,))}"
+        },
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+    assert await _user_count(test_engine) == 0
+
+
+@pytest.mark.parametrize("last_name", [None, "", "   "])
+async def test_missing_or_empty_last_name_is_stored_as_null(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+    last_name: str | None,
+) -> None:
+    overrides = {} if last_name is None else {settings.auth0_last_name_claim: last_name}
+    remove_claims = (settings.auth0_last_name_claim,) if last_name is None else ()
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={
+            "Authorization": f"Bearer "
+            f"{auth_client.token(overrides, remove_claims=remove_claims)}"
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["last_name"] is None
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        user = await session.scalar(select(User))
+    assert user is not None
+    assert user.last_name is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"iss": "https://attacker.example/"},
+        {"aud": "wrong-audience"},
+        {"exp": 0},
+    ],
+)
+async def test_invalid_standard_jwt_claims_are_rejected(
+    auth_client: AuthTestClient,
+    overrides: Mapping[str, Any],
+) -> None:
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {auth_client.token(overrides)}"},
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+
+
+async def test_tampered_rs256_signature_is_rejected(
+    auth_client: AuthTestClient,
+) -> None:
+    token_parts = auth_client.token().split(".")
+    signature = token_parts[2]
+    replacement = "A" if signature[0] != "A" else "B"
+    token_parts[2] = replacement + signature[1:]
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {'.'.join(token_parts)}"},
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+
+
+async def test_missing_exp_claim_is_rejected(
+    auth_client: AuthTestClient,
+) -> None:
+    token = auth_client.token(remove_claims=("exp",))
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+
+
+async def test_missing_bearer_token_is_rejected() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/api/v1/me")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+
+
+async def test_jwks_failure_returns_service_unavailable(
+    auth_client: AuthTestClient,
+) -> None:
+    auth_client.jwks_status[0] = 503
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {auth_client.token()}"},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "auth_provider_unavailable"}
+
+
+async def test_email_conflict_on_first_provisioning_writes_nothing(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    await _insert_user(
+        test_engine,
+        auth0_sub="auth0|original",
+        email="alice@example.com",
+        first_name="Original",
+    )
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {auth_client.token()}"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "account_exists_use_existing_sign_in"}
+    assert await _user_count(test_engine) == 1
+
+
+async def test_email_conflict_during_sync_writes_nothing(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    await _insert_user(
+        test_engine,
+        auth0_sub="auth0|alice",
+        email="alice@example.com",
+        first_name="Alice",
+    )
+    await _insert_user(
+        test_engine,
+        auth0_sub="auth0|other",
+        email="other@example.com",
+        first_name="Other",
+    )
+    conflicting_token = auth_client.token(
+        {settings.auth0_email_claim: "other@example.com"}
+    )
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={"Authorization": f"Bearer {conflicting_token}"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "account_exists_use_existing_sign_in"}
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        alice = await session.scalar(
+            select(User).where(User.auth0_sub == "auth0|alice")
+        )
+    assert alice is not None
+    assert alice.email == "alice@example.com"
+    assert alice.first_name == "Alice"
+    assert await _user_count(test_engine) == 2
+
+
+async def test_concurrent_first_requests_create_one_user(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    token = auth_client.token()
+    responses: list[httpx.Response] = []
+
+    async def request_profile() -> None:
+        response = await auth_client.client.get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        responses.append(response)
+
+    async with asyncio.TaskGroup() as task_group:
+        task_group.create_task(request_profile())
+        task_group.create_task(request_profile())
+
+    assert len(responses) == 2
+    assert all(response.status_code == 200 for response in responses)
+    assert responses[0].json()["id"] == responses[1].json()["id"]
+    assert await _user_count(test_engine) == 1
+    assert len(auth_client.jwks_requests) == 1
