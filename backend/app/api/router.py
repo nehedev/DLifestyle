@@ -16,15 +16,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import CurrentUser, get_current_user
 from app.core.cursors import InvalidCursor
 from app.db.session import get_session
+from app.models import ServiceRequest
 from app.payments.dependencies import get_payment_provider
 from app.payments.protocol import PaymentProvider
+from app.schemas.base import CursorPage
 from app.schemas.orders import (
-    CursorPage,
     OrderCreate,
     OrderDetailResponse,
     OrderResponse,
 )
 from app.schemas.payments import PayResponse
+from app.schemas.service_requests import (
+    ServiceRequestCreate,
+    ServiceRequestResponse,
+)
 from app.schemas.user import MeResponse
 from app.services.orders import (
     IdempotencyKeyReused,
@@ -45,11 +50,42 @@ from app.services.payments import (
     PaymentOrderNotPending,
     initialize_payment,
 )
+from app.services.service_requests import (
+    IllegalServiceRequestTransition,
+    PreferredDateInThePast,
+    ServiceNotActive,
+    ServiceNotFound,
+    ServiceRequestNotFound,
+    cancel_service_request,
+    create_service_request,
+    list_service_requests,
+)
+from app.services.service_requests import (
+    get_service_request as find_service_request,
+)
 from app.services.store_settings import StoreNotConfigured
 from app.workers.payment_tasks import process_payment_event
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _service_request_response(
+    request: ServiceRequest,
+) -> ServiceRequestResponse:
+    return ServiceRequestResponse(
+        id=request.id,
+        service_id=request.service_id,
+        preferred_date=request.preferred_date,
+        location=request.location,
+        details=request.details,
+        contact_phone=request.contact_phone,
+        status=request.status,
+        quoted_amount_minor=request.quoted_amount_minor,
+        owner_note=request.owner_note,
+        created_at=request.created_at,
+        updated_at=request.updated_at,
+    )
 
 
 @router.get("/me", response_model=MeResponse)
@@ -231,3 +267,103 @@ async def post_paystack_webhook(
             detail="webhook_enqueue_failed",
         ) from error
     return Response(status_code=status.HTTP_200_OK)
+
+
+@router.post("/service-requests", response_model=ServiceRequestResponse)
+async def post_service_request(
+    body: ServiceRequestCreate,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ServiceRequestResponse:
+    try:
+        request = await create_service_request(
+            session,
+            user=current_user.user,
+            service_id=body.service_id,
+            preferred_date=body.preferred_date,
+            location=body.location,
+            details=body.details,
+            contact_phone=body.contact_phone,
+        )
+    except ServiceNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    except ServiceNotActive as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="service_not_active"
+        ) from error
+    except PreferredDateInThePast as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="preferred_date_in_the_past",
+        ) from error
+    return _service_request_response(request)
+
+
+@router.get("/service-requests", response_model=CursorPage[ServiceRequestResponse])
+async def get_service_requests(
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    request_status: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            pattern=r"^(requested|contacted|confirmed|completed|cancelled)$",
+        ),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: str | None = None,
+) -> CursorPage[ServiceRequestResponse]:
+    try:
+        requests, next_cursor = await list_service_requests(
+            session,
+            user_id=current_user.user.id,
+            status=request_status,
+            limit=limit,
+            cursor=cursor,
+        )
+    except InvalidCursor as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_cursor"
+        ) from error
+    return CursorPage(
+        items=[_service_request_response(request) for request in requests],
+        next_cursor=next_cursor,
+    )
+
+
+@router.get("/service-requests/{request_id}", response_model=ServiceRequestResponse)
+async def get_service_request_by_id(
+    request_id: int,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ServiceRequestResponse:
+    request = await find_service_request(
+        session, request_id=request_id, user_id=current_user.user.id
+    )
+    if request is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return _service_request_response(request)
+
+
+@router.post(
+    "/service-requests/{request_id}/cancel", response_model=ServiceRequestResponse
+)
+async def post_cancel_service_request(
+    request_id: int,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ServiceRequestResponse:
+    try:
+        request = await cancel_service_request(
+            session,
+            request_id=request_id,
+            user_id=current_user.user.id,
+        )
+    except ServiceRequestNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    except IllegalServiceRequestTransition as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="service_request_not_cancellable",
+        ) from error
+    return _service_request_response(request)

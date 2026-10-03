@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -7,16 +8,52 @@ from app.api.dependencies import get_owner_user
 from app.core.config import settings
 from app.core.cursors import InvalidCursor
 from app.db.session import get_session
-from app.models import MenuItem, Service, StoreSettings
+from app.models import MenuItem, Service, ServiceRequest, StoreSettings
+from app.schemas.admin_orders import (
+    AdminOrderListResponse,
+    AdminOrderResponse,
+    AdminOrderStatusBody,
+    AdminPaymentListResponse,
+    admin_order_list_response,
+    admin_order_response,
+    admin_payment_list_response,
+)
 from app.schemas.base import CursorPage
 from app.schemas.menu import MenuItemAdmin, MenuItemCreate, MenuItemPatch
+from app.schemas.service_requests import (
+    ServiceRequestAdminResponse,
+    ServiceRequestPatch,
+)
 from app.schemas.services import ServiceAdmin, ServiceCreate, ServicePatch
 from app.schemas.store import StorePublic, StoreSettingsPut
+from app.services import admin_orders
 from app.services import menu as menu_service
+from app.services import service_requests as service_request_service
 from app.services import services as services_service
+from app.services.service_requests import (
+    IllegalServiceRequestTransition,
+    ServiceRequestNotFound,
+)
 from app.services.store_settings import get_store_settings, put_store_settings
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(get_owner_user)])
+
+
+def _admin_request_response(request: ServiceRequest) -> ServiceRequestAdminResponse:
+    return ServiceRequestAdminResponse(
+        id=request.id,
+        user_id=request.user_id,
+        service_id=request.service_id,
+        preferred_date=request.preferred_date,
+        location=request.location,
+        details=request.details,
+        contact_phone=request.contact_phone,
+        status=request.status,
+        quoted_amount_minor=request.quoted_amount_minor,
+        owner_note=request.owner_note,
+        created_at=request.created_at,
+        updated_at=request.updated_at,
+    )
 
 
 def _menu_item_response(menu_item: MenuItem) -> MenuItemAdmin:
@@ -198,3 +235,177 @@ async def put_admin_store_settings(
         max_advance_days=body.max_advance_days,
     )
     return _store_response(store_settings)
+
+
+@router.get("/orders", response_model=CursorPage[AdminOrderListResponse])
+async def get_admin_orders(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    order_status: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            pattern=r"^(pending|paid|preparing|ready|completed|cancelled)$",
+        ),
+    ] = None,
+    fulfillment_date: date | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: str | None = None,
+) -> CursorPage[AdminOrderListResponse]:
+    try:
+        orders, next_cursor = await admin_orders.list_admin_orders(
+            session,
+            status=order_status,
+            fulfillment_date=fulfillment_date,
+            limit=limit,
+            cursor=cursor,
+        )
+    except InvalidCursor as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_cursor"
+        ) from error
+    return CursorPage(
+        items=[admin_order_list_response(order) for order in orders],
+        next_cursor=next_cursor,
+    )
+
+
+@router.get("/orders/{order_id}", response_model=AdminOrderResponse)
+async def get_admin_order_by_id(
+    order_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AdminOrderResponse:
+    try:
+        detail = await admin_orders.get_admin_order(session, order_id=order_id)
+    except admin_orders.OrderNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    return admin_order_response(detail)
+
+
+@router.post("/orders/{order_id}/status", response_model=AdminOrderResponse)
+async def post_admin_order_status(
+    order_id: int,
+    body: AdminOrderStatusBody,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AdminOrderResponse:
+    try:
+        detail = await admin_orders.set_owner_order_status(
+            session, order_id=order_id, new_status=body.status
+        )
+    except admin_orders.OrderNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    except (
+        admin_orders.IllegalOrderTransition,
+        admin_orders.OwnerCancelConflict,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="order_transition_not_allowed",
+        ) from error
+    return admin_order_response(detail)
+
+
+@router.get("/payments", response_model=CursorPage[AdminPaymentListResponse])
+async def get_admin_payments(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    payment_status: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            pattern=(
+                r"^(initiated|succeeded|failed|needs_review|refund_pending"
+                r"|refunded)$"
+            ),
+        ),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: str | None = None,
+) -> CursorPage[AdminPaymentListResponse]:
+    try:
+        payments, next_cursor = await admin_orders.list_admin_payments(
+            session,
+            status=payment_status,
+            limit=limit,
+            cursor=cursor,
+        )
+    except InvalidCursor as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_cursor"
+        ) from error
+    return CursorPage(
+        items=[admin_payment_list_response(payment) for payment in payments],
+        next_cursor=next_cursor,
+    )
+
+
+@router.get("/service-requests", response_model=CursorPage[ServiceRequestAdminResponse])
+async def get_admin_service_requests(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    request_status: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            pattern=r"^(requested|contacted|confirmed|completed|cancelled)$",
+        ),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: str | None = None,
+) -> CursorPage[ServiceRequestAdminResponse]:
+    try:
+        requests, next_cursor = await service_request_service.list_service_requests(
+            session,
+            user_id=None,
+            status=request_status,
+            limit=limit,
+            cursor=cursor,
+        )
+    except InvalidCursor as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_cursor"
+        ) from error
+    return CursorPage(
+        items=[_admin_request_response(request) for request in requests],
+        next_cursor=next_cursor,
+    )
+
+
+@router.get(
+    "/service-requests/{request_id}",
+    response_model=ServiceRequestAdminResponse,
+)
+async def get_admin_service_request_by_id(
+    request_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ServiceRequestAdminResponse:
+    request = await service_request_service.get_service_request(
+        session, request_id=request_id, user_id=None
+    )
+    if request is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return _admin_request_response(request)
+
+
+@router.patch(
+    "/service-requests/{request_id}",
+    response_model=ServiceRequestAdminResponse,
+)
+async def patch_admin_service_request(
+    request_id: int,
+    body: ServiceRequestPatch,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ServiceRequestAdminResponse:
+    try:
+        request = await service_request_service.patch_service_request(
+            session,
+            request_id=request_id,
+            status=body.status,
+            quoted_amount_minor=body.quoted_amount_minor,
+            owner_note=body.owner_note,
+        )
+    except (ServiceRequestNotFound,) as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    except IllegalServiceRequestTransition as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="service_request_transition_not_allowed",
+        ) from error
+    return _admin_request_response(request)
