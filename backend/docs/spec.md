@@ -32,7 +32,7 @@ Money is stored as **integers in minor units** (kobo). The single currency comes
 
 **users**: `id` (bigint PK), `auth0_sub` (unique, not null), `email` (unique, not null), `first_name` (not null), `last_name` (nullable), `created_at`. Every email addresses the user by `first_name`.
 
-**menu_items**: `id`, `name`, `description` (nullable), `price_minor` (int, >= 0), `is_active` (hidden from customers when false), `is_sold_out` (visible but not orderable when true), `created_at`, `updated_at`. Items are never deleted (orders reference them); the owner deactivates them.
+**menu_items**: `id`, `name`, `description` (nullable), `category` (text, not null), `image_url` (image URL, nullable), `image_alt` (image alt text, nullable), `price_minor` (int, >= 0), `is_active` (hidden from customers when false), `is_sold_out` (visible but not orderable when true), `created_at`, `updated_at`. Items are never deleted (orders reference them); the owner deactivates them.
 
 **menu_item_days**: `menu_item_id` -> menu_items (cascade), `weekday` (smallint, ISO: 1 = Monday ... 7 = Sunday, `CHECK` between 1 and 7). Primary key `(menu_item_id, weekday)`. One item can be served on several days.
 
@@ -50,7 +50,7 @@ Money is stored as **integers in minor units** (kobo). The single currency comes
 
 **contact** (order snapshot, validated by Pydantic): `name` (required), `phone` (required, E.164), `address` (required when `fulfillment_type` is `delivery`, otherwise omitted or null). Free-text address; no postal code, no country field. Strings are trimmed, non-empty, max 255 characters.
 
-**Length limits:** order `notes` max 1000 characters; service request `location` max 255 and `details` max 2000.
+**Length limits:** order `notes` max 1000 characters; service request `location` max 255 and `details` max 2000; menu item `category` max 255, `image_url` max 2048, and `image_alt` max 255.
 
 Rules:
 - Never store card data. Only gateway references.
@@ -94,7 +94,7 @@ All routes are mounted under `/api/v1`. Paths below are relative to that prefix.
 
 ### 5.1 Public storefront data
 
-- `GET /menu`: all active items with `id`, `name`, `description`, `price_minor`, `is_sold_out`, and `weekdays` (list of ISO weekday numbers). Response `{"items": [...]}`. Not paginated.
+- `GET /menu`: all active items with `id`, `name`, `description`, `category`, `image_url`, `image_alt`, `price_minor`, `is_sold_out`, and `weekdays` (list of ISO weekday numbers). Response `{"items": [...]}`. Not paginated.
 - `GET /services`: active services ordered by `sort_order`, with `id`, `name`, `description`. Response `{"items": [...]}`.
 - `GET /store`: `delivery_fee_minor`, `order_cutoff_time` (`HH:MM`), `max_advance_days`, `currency`, `timezone`. If store settings have not been configured, return `503` with `detail` `"store_not_configured"`.
 
@@ -197,7 +197,7 @@ All under `/admin`, all require `OwnerUser` (`401` without a token, `403` withou
 
 - **Orders:** `GET /admin/orders` (filters `status` and `fulfillment_date`; cursor paginated), `GET /admin/orders/{id}` (any user's order; payments include `id`, `reference`, `provider_transaction_id`, `status`, `amount_minor`, `currency`), `POST /admin/orders/{id}/status` with body `{"status": "preparing" | "ready" | "completed" | "cancelled"}`. Only the transitions in section 4 are accepted (`409` otherwise). Owner status changes send no email in V1.
 - **Payments:** `GET /admin/payments` (filter `status`; cursor paginated) so `needs_review` and `refund_pending` payments are visible to the owner.
-- **Menu:** `GET /admin/menu-items` (all items, including inactive), `POST /admin/menu-items`, `PATCH /admin/menu-items/{id}` (any of `name`, `description`, `price_minor`, `weekdays`, `is_active`, `is_sold_out`). No delete. Price edits affect only new orders.
+- **Menu:** `GET /admin/menu-items` (all items, including inactive), `POST /admin/menu-items`, `PATCH /admin/menu-items/{id}` (any of `name`, `description`, `category`, `image_url`, `image_alt`, `price_minor`, `weekdays`, `is_active`, `is_sold_out`). No delete. Price edits affect only new orders.
 - **Services:** `GET /admin/services`, `POST /admin/services`, `PATCH /admin/services/{id}` (any of `name`, `description`, `is_active`, `sort_order`). No delete.
 - **Service requests:** `GET /admin/service-requests` (filter `status`; cursor paginated), `GET /admin/service-requests/{id}`, `PATCH /admin/service-requests/{id}` (any of `status`, `quoted_amount_minor`, `owner_note`; status changes follow section 4).
 - **Store settings:** `GET /admin/store-settings`, `PUT /admin/store-settings` (replaces `delivery_fee_minor`, `order_cutoff_time`, `max_advance_days`; creates the row if missing).
@@ -397,18 +397,18 @@ Services: `api`, `worker`, `beat`, `postgres` (PostgreSQL 17), `redis` (Redis 7)
 
 **Menu items:**
 
-| Name | Price (NGN) | Weekdays |
-| --- | --- | --- |
-| Jollof rice + chicken | 3500 | Mon |
-| Jollof rice + fried plantain | 2500 | Mon |
-| Assorted moi moi | 1500 | Mon |
-| Beans + fried plantain | 2500 | Tue |
-| Beans + plantain + egg | 3000 | Tue |
-| Jollof spaghetti + chicken | 3000 | Wed |
-| Spaghetti + egg | 2000 | Wed |
-| Noodles + egg | 2000 | Wed |
-| Fried rice + chicken | 3500 | Thu |
-| Semo + egusi soup + protein | 3500 | Thu, Fri |
-| Semo + vegetable soup + protein | 3500 | Thu |
-| Amala + ewedu + protein | 3000 | Fri |
-| White rice + stew + chicken | 3000 | Sat |
+| Name | Price (NGN) | Weekdays | Category |
+| --- | --- | --- | --- |
+| Jollof rice + chicken | 3500 | Mon | Rice |
+| Jollof rice + fried plantain | 2500 | Mon | Rice |
+| Assorted moi moi | 1500 | Mon | Beans |
+| Beans + fried plantain | 2500 | Tue | Beans |
+| Beans + plantain + egg | 3000 | Tue | Beans |
+| Jollof spaghetti + chicken | 3000 | Wed | Pasta |
+| Spaghetti + egg | 2000 | Wed | Pasta |
+| Noodles + egg | 2000 | Wed | Pasta |
+| Fried rice + chicken | 3500 | Thu | Rice |
+| Semo + egusi soup + protein | 3500 | Thu, Fri | Soups |
+| Semo + vegetable soup + protein | 3500 | Thu | Soups |
+| Amala + ewedu + protein | 3000 | Fri | Soups |
+| White rice + stew + chicken | 3000 | Sat | Rice |

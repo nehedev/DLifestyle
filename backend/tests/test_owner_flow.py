@@ -128,6 +128,7 @@ async def _add_menu_item(
     async with session_factory.begin() as session:
         menu_item = MenuItem(
             name=name,
+            category="Rice",
             price_minor=50_000,
             is_active=is_active,
             is_sold_out=is_sold_out,

@@ -151,11 +151,13 @@ class PaymentTestClient:
         weekdays: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7),
         is_active: bool = True,
         is_sold_out: bool = False,
+        category: str = "Rice",
     ) -> int:
         async with self.session_factory.begin() as session:
             now = datetime.now(UTC)
             menu_item = MenuItem(
                 name=name,
+                category=category,
                 price_minor=price_minor,
                 is_active=is_active,
                 is_sold_out=is_sold_out,

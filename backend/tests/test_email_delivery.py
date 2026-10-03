@@ -69,6 +69,7 @@ async def _email_entities(
         )
         menu_item = MenuItem(
             name="Jollof rice + chicken",
+            category="Rice",
             price_minor=350_000,
             is_active=True,
             is_sold_out=False,

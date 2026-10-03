@@ -40,6 +40,7 @@ async def _insert_menu_item(
         session.add(
             menu_item := MenuItem(
                 name="Expired dish",
+                category="Rice",
                 price_minor=100,
                 is_active=True,
                 is_sold_out=False,

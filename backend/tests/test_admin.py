@@ -64,11 +64,13 @@ async def _add_menu_item(
     is_active: bool = True,
     is_sold_out: bool = False,
     description: str | None = None,
+    category: str = "Rice",
 ) -> int:
     async with session_factory.begin() as session:
         menu_item = MenuItem(
             name=name,
             description=description,
+            category=category,
             price_minor=price_minor,
             is_active=is_active,
             is_sold_out=is_sold_out,
@@ -266,6 +268,9 @@ async def test_admin_menu_items_list_includes_inactive_and_paginates(
             "id",
             "name",
             "description",
+            "category",
+            "image_url",
+            "image_alt",
             "price_minor",
             "is_active",
             "is_sold_out",
@@ -296,6 +301,9 @@ async def test_admin_creates_a_menu_item(
         json={
             "name": "  New dish  ",
             "description": "Tasty",
+            "category": "Pasta",
+            "image_url": "https://cdn.example/dish.jpg",
+            "image_alt": "A plate of pasta",
             "price_minor": 250_000,
             "weekdays": [6, 1, 4],
             "is_sold_out": True,
@@ -305,6 +313,9 @@ async def test_admin_creates_a_menu_item(
     assert response.status_code == 200
     body = response.json()
     assert body["name"] == "New dish"
+    assert body["category"] == "Pasta"
+    assert body["image_url"] == "https://cdn.example/dish.jpg"
+    assert body["image_alt"] == "A plate of pasta"
     assert body["weekdays"] == [1, 4, 6]
     assert body["is_active"] is True
     assert body["is_sold_out"] is True
@@ -312,6 +323,7 @@ async def test_admin_creates_a_menu_item(
         menu_item = await session.get(MenuItem, body["id"])
     assert menu_item is not None
     assert menu_item.name == "New dish"
+    assert menu_item.category == "Pasta"
     assert {day.weekday for day in menu_item.days} == {1, 4, 6}
 
 
@@ -341,7 +353,12 @@ async def test_admin_creates_a_zero_price_menu_item(
 ) -> None:
     response = await owner_client.post(
         "/api/v1/admin/menu-items",
-        json={"name": "Zero price", "price_minor": 0, "weekdays": [1]},
+        json={
+            "name": "Zero price",
+            "category": "Rice",
+            "price_minor": 0,
+            "weekdays": [1],
+        },
     )
     assert response.status_code == 200
     assert response.json()["price_minor"] == 0
@@ -359,6 +376,8 @@ async def test_admin_patches_a_menu_item_and_its_weekdays(
         f"/api/v1/admin/menu-items/{menu_item_id}",
         json={
             "name": "New name",
+            "category": "Soups",
+            "image_url": "https://cdn.example/new.jpg",
             "price_minor": 500_000,
             "weekdays": [2, 3],
             "is_sold_out": True,
@@ -369,6 +388,8 @@ async def test_admin_patches_a_menu_item_and_its_weekdays(
     assert response.status_code == 200
     body = response.json()
     assert body["name"] == "New name"
+    assert body["category"] == "Soups"
+    assert body["image_url"] == "https://cdn.example/new.jpg"
     assert body["price_minor"] == 500_000
     assert body["weekdays"] == [2, 3]
     assert body["is_sold_out"] is True

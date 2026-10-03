@@ -19,20 +19,20 @@ SERVICES: tuple[str, ...] = (
     "Home organization",
 )
 
-MENU: tuple[tuple[str, int, tuple[int, ...]], ...] = (
-    ("Jollof rice + chicken", 350_000, (1,)),
-    ("Jollof rice + fried plantain", 250_000, (1,)),
-    ("Assorted moi moi", 150_000, (1,)),
-    ("Beans + fried plantain", 250_000, (2,)),
-    ("Beans + plantain + egg", 300_000, (2,)),
-    ("Jollof spaghetti + chicken", 300_000, (3,)),
-    ("Spaghetti + egg", 200_000, (3,)),
-    ("Noodles + egg", 200_000, (3,)),
-    ("Fried rice + chicken", 350_000, (4,)),
-    ("Semo + egusi soup + protein", 350_000, (4, 5)),
-    ("Semo + vegetable soup + protein", 350_000, (4,)),
-    ("Amala + ewedu + protein", 300_000, (5,)),
-    ("White rice + stew + chicken", 300_000, (6,)),
+MENU: tuple[tuple[str, int, tuple[int, ...], str], ...] = (
+    ("Jollof rice + chicken", 350_000, (1,), "Rice"),
+    ("Jollof rice + fried plantain", 250_000, (1,), "Rice"),
+    ("Assorted moi moi", 150_000, (1,), "Beans"),
+    ("Beans + fried plantain", 250_000, (2,), "Beans"),
+    ("Beans + plantain + egg", 300_000, (2,), "Beans"),
+    ("Jollof spaghetti + chicken", 300_000, (3,), "Pasta"),
+    ("Spaghetti + egg", 200_000, (3,), "Pasta"),
+    ("Noodles + egg", 200_000, (3,), "Pasta"),
+    ("Fried rice + chicken", 350_000, (4,), "Rice"),
+    ("Semo + egusi soup + protein", 350_000, (4, 5), "Soups"),
+    ("Semo + vegetable soup + protein", 350_000, (4,), "Soups"),
+    ("Amala + ewedu + protein", 300_000, (5,), "Soups"),
+    ("White rice + stew + chicken", 300_000, (6,), "Rice"),
 )
 
 
@@ -46,7 +46,7 @@ async def seed_catalog(
         session_factory = SessionFactory
 
     now = datetime.now(UTC)
-    menu_names = [name for name, _, _ in MENU]
+    menu_names = [name for name, _, _, _ in MENU]
     created: list[str] = []
 
     async with session_factory.begin() as session:
@@ -72,11 +72,12 @@ async def seed_catalog(
                 select(MenuItem).where(MenuItem.name.in_(menu_names))
             )
         }
-        for name, price_minor, _ in MENU:
+        for name, price_minor, _, category in MENU:
             if name in menu_items:
                 continue
             menu_item = MenuItem(
                 name=name,
+                category=category,
                 price_minor=price_minor,
                 is_active=True,
                 is_sold_out=False,
@@ -98,7 +99,7 @@ async def seed_catalog(
                 )
             )
         }
-        for name, _, weekdays in MENU:
+        for name, _, weekdays, _ in MENU:
             menu_item = menu_items[name]
             for weekday in weekdays:
                 if (menu_item.id, weekday) in existing_days:

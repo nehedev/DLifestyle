@@ -39,6 +39,7 @@ async def _insert_user(connection, *, sub: str, email: str) -> int:
 async def _insert_menu_item(connection, **overrides: object) -> int:
     values: dict[str, object] = {
         "name": "Constraint item",
+        "category": "Rice",
         "price_minor": 100,
         "is_active": True,
         "is_sold_out": False,
@@ -189,6 +190,7 @@ async def test_check_constraints_reject_invalid_values(
                 connection,
                 insert(MenuItem).values(
                     name="Negative price",
+                    category="Rice",
                     price_minor=-1,
                     is_active=True,
                     is_sold_out=False,

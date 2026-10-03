@@ -25,11 +25,17 @@ async def _add_menu_item(
     is_sold_out: bool = False,
     description: str | None = None,
     price_minor: int = 350_000,
+    category: str = "Rice",
+    image_url: str | None = None,
+    image_alt: str | None = None,
 ) -> int:
     async with session_factory.begin() as session:
         menu_item = MenuItem(
             name=name,
             description=description,
+            category=category,
+            image_url=image_url,
+            image_alt=image_alt,
             price_minor=price_minor,
             is_active=is_active,
             is_sold_out=is_sold_out,
@@ -103,6 +109,9 @@ async def test_menu_is_public_hides_inactive_and_flags_sold_out(
         weekdays=(1, 4),
         description="One plate",
         price_minor=350_000,
+        category="Rice",
+        image_url="https://cdn.example/jollof.jpg",
+        image_alt="A plate of jollof rice",
     )
     amala_id = await _add_menu_item(
         catalog, name="Amala + ewedu + protein", weekdays=(5,), price_minor=300_000
@@ -121,6 +130,9 @@ async def test_menu_is_public_hides_inactive_and_flags_sold_out(
                 "id": amala_id,
                 "name": "Amala + ewedu + protein",
                 "description": None,
+                "category": "Rice",
+                "image_url": None,
+                "image_alt": None,
                 "price_minor": 300_000,
                 "is_sold_out": False,
                 "weekdays": [5],
@@ -129,6 +141,9 @@ async def test_menu_is_public_hides_inactive_and_flags_sold_out(
                 "id": jollof_id,
                 "name": "Jollof rice + chicken",
                 "description": "One plate",
+                "category": "Rice",
+                "image_url": "https://cdn.example/jollof.jpg",
+                "image_alt": "A plate of jollof rice",
                 "price_minor": 350_000,
                 "is_sold_out": False,
                 "weekdays": [1, 4],
@@ -137,6 +152,9 @@ async def test_menu_is_public_hides_inactive_and_flags_sold_out(
                 "id": sold_out_id,
                 "name": "Sold out dish",
                 "description": None,
+                "category": "Rice",
+                "image_url": None,
+                "image_alt": None,
                 "price_minor": 350_000,
                 "is_sold_out": True,
                 "weekdays": [2],

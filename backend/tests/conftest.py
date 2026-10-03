@@ -164,6 +164,7 @@ class OrderTestClient:
         weekdays: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7),
         is_active: bool = True,
         is_sold_out: bool = False,
+        category: str = "Rice",
     ) -> int:
         from app.models import MenuItem, MenuItemDay
 
@@ -171,6 +172,7 @@ class OrderTestClient:
             now = datetime.now(UTC)
             menu_item = MenuItem(
                 name=name,
+                category=category,
                 price_minor=price_minor,
                 is_active=is_active,
                 is_sold_out=is_sold_out,

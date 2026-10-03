@@ -6,20 +6,20 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from app.models import MenuItem, MenuItemDay, Service
 from scripts.seed_catalog import MENU, SERVICES, seed_catalog
 
-SPEC_MENU: dict[str, tuple[int, set[int]]] = {
-    "Jollof rice + chicken": (350_000, {1}),
-    "Jollof rice + fried plantain": (250_000, {1}),
-    "Assorted moi moi": (150_000, {1}),
-    "Beans + fried plantain": (250_000, {2}),
-    "Beans + plantain + egg": (300_000, {2}),
-    "Jollof spaghetti + chicken": (300_000, {3}),
-    "Spaghetti + egg": (200_000, {3}),
-    "Noodles + egg": (200_000, {3}),
-    "Fried rice + chicken": (350_000, {4}),
-    "Semo + egusi soup + protein": (350_000, {4, 5}),
-    "Semo + vegetable soup + protein": (350_000, {4}),
-    "Amala + ewedu + protein": (300_000, {5}),
-    "White rice + stew + chicken": (300_000, {6}),
+SPEC_MENU: dict[str, tuple[int, set[int], str]] = {
+    "Jollof rice + chicken": (350_000, {1}, "Rice"),
+    "Jollof rice + fried plantain": (250_000, {1}, "Rice"),
+    "Assorted moi moi": (150_000, {1}, "Beans"),
+    "Beans + fried plantain": (250_000, {2}, "Beans"),
+    "Beans + plantain + egg": (300_000, {2}, "Beans"),
+    "Jollof spaghetti + chicken": (300_000, {3}, "Pasta"),
+    "Spaghetti + egg": (200_000, {3}, "Pasta"),
+    "Noodles + egg": (200_000, {3}, "Pasta"),
+    "Fried rice + chicken": (350_000, {4}, "Rice"),
+    "Semo + egusi soup + protein": (350_000, {4, 5}, "Soups"),
+    "Semo + vegetable soup + protein": (350_000, {4}, "Soups"),
+    "Amala + ewedu + protein": (300_000, {5}, "Soups"),
+    "White rice + stew + chicken": (300_000, {6}, "Rice"),
 }
 
 
@@ -30,7 +30,9 @@ def test_seed_data_matches_the_spec() -> None:
         "Errand running",
         "Home organization",
     )
-    assert {name: (price, set(days)) for name, price, days in MENU} == SPEC_MENU
+    assert {
+        name: (price, set(days), category) for name, price, days, category in MENU
+    } == SPEC_MENU
 
 
 async def test_seed_catalog_creates_the_services_and_menu(
@@ -40,7 +42,7 @@ async def test_seed_catalog_creates_the_services_and_menu(
     created = await seed_catalog(session_factory)
 
     assert len(created) == len(SERVICES) + len(MENU) + sum(
-        len(days) for _, _, days in MENU
+        len(days) for _, _, days, _ in MENU
     )
 
     async with session_factory() as session:
@@ -62,9 +64,10 @@ async def test_seed_catalog_creates_the_services_and_menu(
     assert all(service.is_active for service in services)
 
     assert set(menu_items) == set(SPEC_MENU)
-    for name, (price_minor, weekdays) in SPEC_MENU.items():
+    for name, (price_minor, weekdays, category) in SPEC_MENU.items():
         menu_item = menu_items[name]
         assert menu_item.price_minor == price_minor
+        assert menu_item.category == category
         assert menu_item.is_active is True
         assert menu_item.is_sold_out is False
         assert days_by_item[menu_item.id] == weekdays
@@ -117,6 +120,7 @@ async def test_seed_catalog_fills_missing_weekdays_only(
         session.add(
             MenuItem(
                 name="Semo + egusi soup + protein",
+                category="Soups",
                 price_minor=350_000,
                 is_active=True,
                 is_sold_out=False,
