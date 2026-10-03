@@ -25,24 +25,17 @@ export function Home({ add }: { add: (id: string) => void }) {
     <>
       <section className="hero">
         <div className="wrap hero-in">
-          <div className="hero-bg" aria-hidden>
-            <div className="blob" /><div className="blob2" />
-            <img src="/img/chef-dami.png" alt="" />
+          <h1>Good food and a lighter to-do list.</h1>
+          <p>Dami's Lifestyle Services makes everyday life easier. Order home-style Nigerian meals, or book a chef, cleaner, errand runner or home organizer.</p>
+          <div className="cta">
+            <A to="/menu" className="btn red lg">Order food <iconify-icon icon="lucide:arrow-right" /></A>
+            <A to="/menu?svc" className="btn ghost-l lg">Explore services</A>
           </div>
-          <div className="glass">
-            <h1>Good food and a lighter to-do list.</h1>
-            <p>Dami's Lifestyle Services makes everyday life easier. Order home-style Nigerian meals, or book a chef, cleaner, errand runner or home organizer.</p>
-            <div className="cta">
-              <A to="/menu" className="btn red lg">Order food <iconify-icon icon="lucide:arrow-right" /></A>
-              <A to="/menu?svc" className="btn ghost lg">Explore services</A>
-            </div>
-            <ul className="facts">
-              <li>Cooked by Chef Dami</li>
-              <li>Delivery or pickup</li>
-              <li>Pay by card or transfer</li>
-            </ul>
-          </div>
-          <p className="sr">Chef Dami, founder, smiling in her chef's whites</p>
+          <ul className="facts">
+            <li>Cooked by Chef Dami</li>
+            <li>Delivery or pickup</li>
+            <li>Pay by card or transfer</li>
+          </ul>
         </div>
       </section>
 
