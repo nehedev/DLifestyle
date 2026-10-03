@@ -19,7 +19,7 @@ class EmailMessage:
 
     @property
     def idempotency_key(self) -> str:
-        return f"ficmart:{self.email_type}:{self.entity_id}"
+        return f"damis:{self.email_type}:{self.entity_id}"
 
 
 class ResendClient:

@@ -185,13 +185,13 @@ async def test_all_seven_emails_go_out_with_deterministic_keys(
 
     assert len(requests) == 7
     assert [request.headers["Idempotency-Key"] for request in requests] == [
-        f"ficmart:welcome:{entities.user_id}",
-        f"ficmart:order_confirmation:{entities.order_id}",
-        f"ficmart:new_order:{entities.order_id}",
-        f"ficmart:payment_failed:{entities.payment_id}",
-        f"ficmart:order_cancelled:{entities.order_id}",
-        f"ficmart:request_received:{entities.request_id}",
-        f"ficmart:new_service_request:{entities.request_id}",
+        f"damis:welcome:{entities.user_id}",
+        f"damis:order_confirmation:{entities.order_id}",
+        f"damis:new_order:{entities.order_id}",
+        f"damis:payment_failed:{entities.payment_id}",
+        f"damis:order_cancelled:{entities.order_id}",
+        f"damis:request_received:{entities.request_id}",
+        f"damis:new_service_request:{entities.request_id}",
     ]
     email_types = {
         key.split(":")[1]

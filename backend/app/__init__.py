@@ -1,1 +1,1 @@
-"""Ficmart backend application package."""
+"""Dami's Lifestyle Services backend application package."""

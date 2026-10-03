@@ -6,7 +6,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
-celery_app = Celery("ficmart", broker=settings.redis_url)
+celery_app = Celery("damis_lifestyle_services", broker=settings.redis_url)
 celery_app.conf.update(
     task_acks_late=True,
     imports=(

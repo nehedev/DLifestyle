@@ -26,7 +26,7 @@ from app.models import User
 from app.services import users as users_service
 from app.workers.celery_app import celery_app
 
-_KEY_ID = "ficmart-auth-test-key"
+_KEY_ID = "damis-auth-test-key"
 
 
 def _base64url_integer(value: int) -> str:

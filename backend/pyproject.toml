@@ -1,7 +1,7 @@
 [project]
 name = "ficmart-backend"
 version = "0.1.0"
-description = "Ficmart backend service"
+description = "Backend for Dami's Lifestyle Services"
 requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.20.0",
