@@ -25,7 +25,7 @@ export function Home({ add }: { add: (id: string) => void }) {
     <>
       <section className="hero">
         <div className="wrap hero-in">
-          <h1>Good food and a lighter to-do list.</h1>
+          <h1>Your meals. Your home. Made easier.</h1>
           <p>Dami's Lifestyle Services makes everyday life easier. Order home-style Nigerian meals, or book a chef, cleaner, errand runner or home organizer.</p>
           <div className="cta">
             <A to="/menu" className="btn red lg">Order food <iconify-icon icon="lucide:arrow-right" /></A>
