@@ -191,6 +191,12 @@ async def test_concurrent_expiry_runs_cancel_once(test_engine: AsyncEngine) -> N
 
     assert sum(order_id in result for result in results) == 1
     assert queued == [order_id]
+    replay = await cancel_expired_orders_impl(
+        session_factory=session_factory,
+        enqueue_cancelled_email=queued.append,
+    )
+    assert replay == []
+    assert queued == [order_id]
     async with session_factory() as session:
         order = await session.get(Order, order_id)
     assert order is not None

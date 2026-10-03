@@ -36,6 +36,7 @@ from app.payments.protocol import (
     PaymentProviderError,
     VerifiedPayment,
 )
+from app.services.expiry import cancel_expired_orders_impl
 from app.services.payment_events import (
     process_payment_event_impl,
     refund_payment_impl,
@@ -539,6 +540,11 @@ async def test_late_payment_reinstates_cancelled_order_when_still_fulfillable(
     assert order.status == "paid"
     assert payment.status == "succeeded"
     assert payment_client.provider.refund_calls == []
+    assert payment_client.enqueued_tasks == [
+        ("send_order_cancelled_email", [order_id]),
+        ("send_order_confirmation_email", [order_id]),
+        ("send_new_order_email", [order_id]),
+    ]
 
 
 async def test_late_payment_after_the_cutoff_starts_a_refund(
@@ -741,6 +747,51 @@ async def test_cancel_racing_verified_payment_is_consistent(
     assert order.status == "paid"
     assert payment.status == "succeeded"
     assert cancel_responses[0].status_code in {200, 409}
+
+
+async def test_expiry_racing_a_paid_webhook_is_consistent(
+    payment_client: PaymentTestClient,
+) -> None:
+    """Expiry and a verified payment must not both win.
+
+    Whichever transaction commits first decides the path: a paid order is
+    left alone by the conditional expiry update, and an expired order is
+    reinstated by the late-payment branch because it can still be
+    fulfilled. Either way, the committed state is one paid order with one
+    succeeded payment.
+    """
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
+    expired_at = datetime.now(UTC) - timedelta(
+        minutes=settings.pending_order_timeout_minutes + 1
+    )
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(Order)
+            .where(Order.id == order_id)
+            .values(created_at=expired_at, updated_at=expired_at)
+        )
+    payment_client.provider.verify_result = _success_result()
+
+    async def run_expiry() -> None:
+        await cancel_expired_orders_impl(
+            session_factory=payment_client.session_factory,
+            enqueue_cancelled_email=lambda _: None,
+        )
+
+    async def process_success() -> None:
+        await _run_payment_event(payment_client, "charge.success", reference)
+
+    async with asyncio.TaskGroup() as task_group:
+        task_group.create_task(run_expiry())
+        task_group.create_task(process_success())
+
+    order, payment = await _get_order_and_payment(
+        payment_client.session_factory,
+        order_id=order_id,
+        payment_id=payment_id,
+    )
+    assert order.status == "paid"
+    assert payment.status == "succeeded"
 
 
 async def test_paystack_adapter_maps_requests_responses_signature_and_events() -> None:
