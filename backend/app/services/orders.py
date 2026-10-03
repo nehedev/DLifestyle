@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.cursors import decode_order_cursor, encode_order_cursor
+from app.core.cursors import decode_created_cursor, encode_created_cursor
 from app.models import Order, OrderItem, Payment, User
 from app.schemas.orders import (
     CursorPage,
@@ -265,7 +265,7 @@ async def list_orders(
 ) -> CursorPage[OrderResponse]:
     statement = select(Order).where(Order.user_id == user_id)
     if cursor is not None:
-        created_at, order_id = decode_order_cursor(cursor)
+        created_at, order_id = decode_created_cursor(cursor)
         statement = statement.where(
             or_(
                 Order.created_at < created_at,
@@ -289,7 +289,7 @@ async def list_orders(
     last_order = page[-1] if page else None
     return CursorPage(
         items=response_items,
-        next_cursor=encode_order_cursor(last_order.created_at, last_order.id)
+        next_cursor=encode_created_cursor(last_order.created_at, last_order.id)
         if has_next and last_order is not None
         else None,
     )

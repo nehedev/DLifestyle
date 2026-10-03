@@ -1,4 +1,16 @@
-from pydantic import BaseModel
+from datetime import datetime
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints
+
+type MenuItemName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+]
+type MenuItemDescription = Annotated[
+    str, StringConstraints(strip_whitespace=True, max_length=2000)
+]
+type PriceMinor = Annotated[int, Field(ge=0)]
+type Weekdays = Annotated[list[Annotated[int, Field(ge=1, le=7)]], Field(min_length=1)]
 
 
 class MenuItemPublic(BaseModel):
@@ -8,3 +20,27 @@ class MenuItemPublic(BaseModel):
     price_minor: int
     is_sold_out: bool
     weekdays: list[int]
+
+
+class MenuItemAdmin(MenuItemPublic):
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class MenuItemCreate(BaseModel):
+    name: MenuItemName
+    description: MenuItemDescription | None = None
+    price_minor: PriceMinor
+    weekdays: Weekdays
+    is_active: bool = True
+    is_sold_out: bool = False
+
+
+class MenuItemPatch(BaseModel):
+    name: MenuItemName | None = None
+    description: MenuItemDescription | None = None
+    price_minor: PriceMinor | None = None
+    weekdays: Weekdays | None = None
+    is_active: bool | None = None
+    is_sold_out: bool | None = None
