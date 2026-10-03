@@ -162,7 +162,13 @@ async def test_same_day_before_the_cutoff_succeeds(
 ) -> None:
     menu_item_id = await order_client.add_menu_item(weekdays=(1, 2, 3, 4, 5, 6, 7))
     now = business_now()
-    cutoff_still_ahead = (now + timedelta(hours=1)).time().replace(tzinfo=None)
+    ahead = now + timedelta(hours=1)
+    # Near midnight the +1h cutoff would roll into the next day and close
+    # today. Fall back to the last instant of the current day, which is
+    # still ahead of "now" and keeps the same-day case deterministic.
+    cutoff_still_ahead = (
+        time(23, 59, 59, 999999) if ahead.date() != now.date() else ahead.time()
+    )
     await order_client.configure_store(cutoff=cutoff_still_ahead)
 
     response = await order_client.client.post(
