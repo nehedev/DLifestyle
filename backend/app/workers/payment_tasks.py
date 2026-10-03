@@ -1,5 +1,6 @@
 import asyncio
 
+from celery import shared_task
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import settings
@@ -14,7 +15,7 @@ from app.workers.celery_app import celery_app, worker_engine
 WorkerSessionFactory = async_sessionmaker(worker_engine, expire_on_commit=False)
 
 
-@celery_app.task(
+@shared_task(
     name="process_payment_event",
     acks_late=True,
     autoretry_for=(Exception,),
@@ -28,12 +29,14 @@ def process_payment_event(event: PaymentEvent) -> None:
             event,
             session_factory=WorkerSessionFactory,
             provider=get_payment_provider(),
-            enqueue_refund=refund_payment.delay,
+            enqueue_refund=lambda payment_id: celery_app.send_task(
+                "refund_payment", args=[payment_id]
+            ),
         )
     )
 
 
-@celery_app.task(
+@shared_task(
     name="refund_payment",
     acks_late=True,
     autoretry_for=(Exception,),

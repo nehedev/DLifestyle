@@ -40,7 +40,6 @@ from app.services.payment_events import (
     process_payment_event_impl,
     refund_payment_impl,
 )
-from app.workers import payment_tasks
 from app.workers.celery_app import celery_app
 
 BUSINESS_ZONE = ZoneInfo(settings.business_timezone)
@@ -384,8 +383,6 @@ async def test_webhook_signature_ignore_and_enqueue_paths(
     payment_client: PaymentTestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queued: list[PaymentEvent] = []
-    monkeypatch.setattr(payment_tasks.process_payment_event, "delay", queued.append)
     body = b'{"event":"charge.success"}'
 
     payment_client.provider.signature_valid = False
@@ -404,7 +401,7 @@ async def test_webhook_signature_ignore_and_enqueue_paths(
         headers={"x-paystack-signature": "valid-signature"},
     )
     assert ignored.status_code == 200
-    assert queued == []
+    assert payment_client.enqueued_tasks == []
 
     payment_client.provider.parsed_event = {
         "event_type": "charge.success",
@@ -416,12 +413,14 @@ async def test_webhook_signature_ignore_and_enqueue_paths(
         headers={"x-paystack-signature": "valid-signature"},
     )
     assert queued_response.status_code == 200
-    assert queued == [payment_client.provider.parsed_event]
+    assert payment_client.enqueued_tasks == [
+        ("process_payment_event", [payment_client.provider.parsed_event])
+    ]
 
-    def fail_enqueue(event: PaymentEvent) -> None:
+    def fail_enqueue(*_: Any, **__: Any) -> None:
         raise RuntimeError("broker unavailable")
 
-    monkeypatch.setattr(payment_tasks.process_payment_event, "delay", fail_enqueue)
+    monkeypatch.setattr(celery_app, "send_task", fail_enqueue)
     failed_enqueue = await payment_client.client.post(
         "/api/v1/webhooks/paystack",
         content=body,

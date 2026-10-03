@@ -64,7 +64,7 @@ from app.services.service_requests import (
     get_service_request as find_service_request,
 )
 from app.services.store_settings import StoreNotConfigured
-from app.workers.payment_tasks import process_payment_event
+from app.workers.celery_app import celery_app
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -259,7 +259,7 @@ async def post_paystack_webhook(
         return Response(status_code=status.HTTP_200_OK)
 
     try:
-        process_payment_event.delay(event)
+        celery_app.send_task("process_payment_event", args=[event])
     except Exception as error:
         logger.error("webhook.enqueue_failed")
         raise HTTPException(
