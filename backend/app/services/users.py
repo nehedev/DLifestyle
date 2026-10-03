@@ -109,7 +109,6 @@ async def resolve_current_user(
     if user is not None:
         return await _sync_existing_user(session, user, values)
 
-    await _ensure_email_available(session, email)
     statement = (
         pg_insert(User)
         .values(**values, created_at=datetime.now(UTC))
@@ -132,8 +131,13 @@ async def resolve_current_user(
         celery_app.send_task("send_welcome_email", args=[inserted_user.id])
         return inserted_user
 
+    # The email check deliberately happens after the insert, not before it.
+    # Checking first races: a concurrent request can commit its own new row
+    # between the check and this insert, and the loser would then report an
+    # email conflict against the very row it was racing to create.
+    await session.rollback()
     user = await session.scalar(select(User).where(User.auth0_sub == auth0_sub))
-    if user is None:
-        await _ensure_email_available(session, email)
-        raise RuntimeError("Auth0 subject conflict did not resolve to a user")
-    return await _sync_existing_user(session, user, values)
+    if user is not None:
+        return await _sync_existing_user(session, user, values)
+    await _ensure_email_available(session, email)
+    raise RuntimeError("Auth0 subject conflict did not resolve to a user")

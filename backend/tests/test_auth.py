@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.main import app
 from app.models import User
+from app.services import users as users_service
 from app.workers.celery_app import celery_app
 
 _KEY_ID = "ficmart-auth-test-key"
@@ -404,3 +405,60 @@ async def test_concurrent_first_requests_create_one_user(
     assert auth_client.enqueued_tasks == [
         ("send_welcome_email", [responses[0].json()["id"]])
     ]
+
+
+async def test_the_email_conflict_is_decided_after_the_insert_is_attempted(
+    test_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The insert must be attempted before the email conflict is decided.
+
+    Checking email availability first is a race. A concurrent request can
+    commit its own newly created row between that check and the insert, so
+    the loser of the insert race would then report a conflict against the
+    very row it was racing to create, and the pair would answer 200 and 409
+    instead of 200 and 200.
+    """
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory.begin() as session:
+        session.add(
+            User(
+                auth0_sub="auth0|existing",
+                email="shared@example.com",
+                first_name="Existing",
+                last_name=None,
+                created_at=datetime.now(UTC),
+            )
+        )
+
+    claims = {
+        "sub": "auth0|newcomer",
+        settings.auth0_email_claim: "shared@example.com",
+        settings.auth0_first_name_claim: "New",
+        settings.auth0_last_name_claim: "Comer",
+    }
+    order: list[str] = []
+    original_check = users_service._ensure_email_available
+    original_insert = users_service.pg_insert
+
+    async def recording_check(
+        session: AsyncSession,
+        email: str,
+        *,
+        exclude_user_id: int | None = None,
+    ) -> None:
+        order.append("check")
+        await original_check(session, email, exclude_user_id=exclude_user_id)
+
+    def recording_insert(*args: Any, **kwargs: Any):
+        order.append("insert")
+        return original_insert(*args, **kwargs)
+
+    monkeypatch.setattr(users_service, "_ensure_email_available", recording_check)
+    monkeypatch.setattr(users_service, "pg_insert", recording_insert)
+
+    async with session_factory() as session:
+        with pytest.raises(users_service.EmailConflict):
+            await users_service.resolve_current_user(session, claims)
+
+    assert order == ["insert", "check"]
