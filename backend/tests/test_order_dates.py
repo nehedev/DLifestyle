@@ -140,10 +140,13 @@ async def test_a_date_after_the_cutoff_is_rejected(
 ) -> None:
     menu_item_id = await order_client.add_menu_item(weekdays=(1, 2, 3, 4, 5, 6, 7))
     now = business_now()
-    cutoff_already_passed = now - timedelta(hours=1)
-    await order_client.configure_store(
-        cutoff=cutoff_already_passed.time().replace(tzinfo=None)
+    earlier = now - timedelta(hours=1)
+    # Near midnight "now - 1h" falls on the previous day, so its time is not
+    # actually in the past for today. Midnight is always a passed cutoff.
+    cutoff_already_passed = (
+        time(0, 0) if earlier.date() != now.date() else earlier.time()
     )
+    await order_client.configure_store(cutoff=cutoff_already_passed)
 
     today = await order_client.client.post(
         "/api/v1/orders", json=_payload(menu_item_id, now.date())
