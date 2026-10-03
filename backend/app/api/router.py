@@ -39,6 +39,8 @@ from app.services.orders import (
 )
 from app.services.payments import (
     PaymentInitializationFailed,
+    PaymentItemsUnavailable,
+    PaymentOrderingClosed,
     PaymentOrderNotFound,
     PaymentOrderNotPending,
     initialize_payment,
@@ -180,6 +182,16 @@ async def post_pay_order(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="order_not_pending",
+        ) from error
+    except PaymentOrderingClosed as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="ordering_closed_for_date",
+        ) from error
+    except PaymentItemsUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"unavailable_menu_item_ids": error.menu_item_ids},
         ) from error
     except PaymentInitializationFailed as error:
         raise HTTPException(

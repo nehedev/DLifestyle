@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -16,8 +16,13 @@ from app.schemas.orders import (
     OrderResponse,
     PaymentSummary,
 )
-from app.services.menu import find_unavailable_menu_item_ids, load_menu_items_with_days
+from app.services.menu import (
+    find_unavailable_menu_item_ids,
+    is_orderable,
+    load_menu_items_with_days,
+)
 from app.services.store_settings import (
+    has_cutoff_passed,
     is_ordering_open,
     require_store_settings,
 )
@@ -27,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 class OrderingClosedForDate(Exception):
+    pass
+
+
+class OrderCanNoLongerBeFulfilled(Exception):
     pass
 
 
@@ -311,6 +320,27 @@ async def get_order_detail(
     return response
 
 
+async def find_unfulfillable_menu_item_ids(
+    session: AsyncSession,
+    *,
+    order_id: int,
+    fulfillment_date: date,
+) -> list[int]:
+    """Menu items on the order that can no longer be served on that date."""
+    order_items = await _load_order_items(session, order_id)
+    menu_items = await load_menu_items_with_days(
+        session, [item.menu_item_id for item in order_items]
+    )
+    menu_items_by_id = {menu_item.id: menu_item for menu_item in menu_items}
+    weekday = fulfillment_date.isoweekday()
+    return sorted(
+        item.menu_item_id
+        for item in order_items
+        if item.menu_item_id not in menu_items_by_id
+        or not is_orderable(menu_items_by_id[item.menu_item_id], weekday=weekday)
+    )
+
+
 async def cancel_order(
     session: AsyncSession,
     *,
@@ -347,3 +377,25 @@ async def cancel_order(
     response = await _order_response(session, order)
     assert isinstance(response, OrderResponse)
     return response
+
+
+async def can_still_be_fulfilled(session: AsyncSession, *, order: Order) -> None:
+    """Raise when the order can no longer be fulfilled, per spec section 4.
+
+    Returns nothing when the order is still fulfillable. The caller
+    decides which failure to report; this only classifies it.
+    """
+    store_settings = await require_store_settings(session)
+    if has_cutoff_passed(
+        store_settings,
+        fulfillment_date=order.fulfillment_date,
+        now=datetime.now(UTC),
+    ):
+        raise OrderCanNoLongerBeFulfilled
+    unavailable = await find_unfulfillable_menu_item_ids(
+        session,
+        order_id=order.id,
+        fulfillment_date=order.fulfillment_date,
+    )
+    if unavailable:
+        raise UnavailableMenuItems(unavailable)

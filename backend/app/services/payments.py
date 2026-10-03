@@ -9,6 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models import Order, Payment, User
 from app.payments.protocol import PaymentProvider, PaymentProviderError
+from app.services.orders import (
+    OrderCanNoLongerBeFulfilled,
+    UnavailableMenuItems,
+    can_still_be_fulfilled,
+)
 
 
 class PaymentOrderNotFound(Exception):
@@ -21,6 +26,15 @@ class PaymentOrderNotPending(Exception):
 
 class PaymentInitializationFailed(Exception):
     pass
+
+
+class PaymentOrderingClosed(Exception):
+    pass
+
+
+class PaymentItemsUnavailable(Exception):
+    def __init__(self, menu_item_ids: list[int]) -> None:
+        self.menu_item_ids = menu_item_ids
 
 
 async def initialize_payment(
@@ -37,6 +51,12 @@ async def initialize_payment(
         raise PaymentOrderNotFound
     if order.status != "pending":
         raise PaymentOrderNotPending
+    try:
+        await can_still_be_fulfilled(session, order=order)
+    except OrderCanNoLongerBeFulfilled as error:
+        raise PaymentOrderingClosed from error
+    except UnavailableMenuItems as error:
+        raise PaymentItemsUnavailable(error.menu_item_ids) from error
 
     reference = str(uuid4())
     now = datetime.now(UTC)

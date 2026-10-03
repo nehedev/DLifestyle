@@ -12,7 +12,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.dependencies import CurrentUser, get_current_user, get_session
@@ -516,7 +516,8 @@ async def test_payment_failed_event_cancels_the_pending_order_once(
     assert order.status == "cancelled"
     assert payment.status == "failed"
     assert payment_client.enqueued_tasks == [
-        ("send_payment_failed_email", [payment_id])
+        ("send_payment_failed_email", [payment_id]),
+        ("send_order_cancelled_email", [order_id]),
     ]
 
 
@@ -879,3 +880,278 @@ async def test_a_menu_edit_does_not_change_the_stored_order_items(
             )
         )
     assert [item.name for item in stored] == ["Snapshot dish"]
+
+
+async def test_pay_after_the_cutoff_is_rejected(
+    payment_client: PaymentTestClient,
+) -> None:
+    today = business_today()
+    order_id, _, _ = await _create_order_and_attempt(
+        payment_client, fulfillment_date=today
+    )
+    references_before = list(payment_client.provider.initialize_references)
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(StoreSettings)
+            .where(StoreSettings.id == 1)
+            .values(order_cutoff_time=time(0, 0))
+        )
+
+    response = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "ordering_closed_for_date"}
+    assert payment_client.provider.initialize_references == references_before
+
+
+async def test_pay_is_rejected_before_any_payment_row_is_written(
+    payment_client: PaymentTestClient,
+) -> None:
+    today = business_today()
+    order_id, _, _ = await _create_order_and_attempt(
+        payment_client, fulfillment_date=today
+    )
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(StoreSettings)
+            .where(StoreSettings.id == 1)
+            .values(order_cutoff_time=time(0, 0))
+        )
+
+    await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+
+    async with payment_client.session_factory() as session:
+        payments = list(await session.scalars(select(Payment)))
+    assert len(payments) == 1
+    assert payments[0].status == "initiated"
+
+
+async def test_pay_is_rejected_when_an_item_became_sold_out(
+    payment_client: PaymentTestClient,
+) -> None:
+    menu_item_id = await payment_client.add_menu_item()
+    order = await payment_client.client.post(
+        "/api/v1/orders",
+        json={
+            "items": [{"menu_item_id": menu_item_id, "quantity": 1}],
+            "fulfillment_type": "pickup",
+            "fulfillment_date": (business_today() + timedelta(days=1)).isoformat(),
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+            "notes": None,
+        },
+    )
+    order_id = order.json()["id"]
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(MenuItem).where(MenuItem.id == menu_item_id).values(is_sold_out=True)
+        )
+
+    response = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"unavailable_menu_item_ids": [menu_item_id]}}
+    assert payment_client.provider.initialize_references == []
+
+
+async def test_pay_is_rejected_when_an_item_is_deactivated(
+    payment_client: PaymentTestClient,
+) -> None:
+    menu_item_id = await payment_client.add_menu_item()
+    order = await payment_client.client.post(
+        "/api/v1/orders",
+        json={
+            "items": [{"menu_item_id": menu_item_id, "quantity": 1}],
+            "fulfillment_type": "pickup",
+            "fulfillment_date": (business_today() + timedelta(days=1)).isoformat(),
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+            "notes": None,
+        },
+    )
+    order_id = order.json()["id"]
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(MenuItem).where(MenuItem.id == menu_item_id).values(is_active=False)
+        )
+
+    response = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"unavailable_menu_item_ids": [menu_item_id]}
+
+
+async def test_pay_is_rejected_when_the_weekday_is_no_longer_served(
+    payment_client: PaymentTestClient,
+) -> None:
+    target = business_today() + timedelta(days=1)
+    menu_item_id = await payment_client.add_menu_item(weekdays=(target.isoweekday(),))
+    order = await payment_client.client.post(
+        "/api/v1/orders",
+        json={
+            "items": [{"menu_item_id": menu_item_id, "quantity": 1}],
+            "fulfillment_type": "pickup",
+            "fulfillment_date": target.isoformat(),
+            "contact": {"name": "Ada Obi", "phone": "+2348012345678"},
+            "notes": None,
+        },
+    )
+    order_id = order.json()["id"]
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            delete(MenuItemDay).where(
+                MenuItemDay.menu_item_id == menu_item_id,
+                MenuItemDay.weekday == target.isoweekday(),
+            )
+        )
+
+    response = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"unavailable_menu_item_ids": [menu_item_id]}
+
+
+async def test_pay_still_works_before_the_cutoff(
+    payment_client: PaymentTestClient,
+) -> None:
+    order_id, _, _ = await _create_order_and_attempt(payment_client)
+    response = await payment_client.client.post(f"/api/v1/orders/{order_id}/pay")
+    assert response.status_code == 200
+
+
+async def test_a_pending_order_is_honoured_even_after_the_cutoff(
+    payment_client: PaymentTestClient,
+) -> None:
+    today = business_today()
+    order_id, payment_id, reference = await _create_order_and_attempt(
+        payment_client, fulfillment_date=today
+    )
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(StoreSettings)
+            .where(StoreSettings.id == 1)
+            .values(order_cutoff_time=time(0, 0))
+        )
+    payment_client.provider.verify_result = _success_result()
+
+    await _run_payment_event(payment_client, "charge.success", reference)
+
+    order, payment = await _get_order_and_payment(
+        payment_client.session_factory,
+        order_id=order_id,
+        payment_id=payment_id,
+    )
+    assert order.status == "paid"
+    assert payment.status == "succeeded"
+
+
+async def test_an_illegal_transition_logs_and_changes_nothing(
+    payment_client: PaymentTestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    _, payment_id, reference = await _create_order_and_attempt(payment_client)
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(Payment)
+            .where(Payment.id == payment_id)
+            .values(status="needs_review")
+        )
+    payment_client.provider.verify_result = _success_result()
+
+    with caplog.at_level(logging.ERROR, logger="app.services.payment_events"):
+        await _run_payment_event(payment_client, "charge.success", reference)
+
+    assert "payment.invalid_transition" in caplog.text
+    async with payment_client.session_factory() as session:
+        payment = await session.get(Payment, payment_id)
+    assert payment is not None
+    assert payment.status == "needs_review"
+
+
+async def test_a_refund_webhook_on_a_wrong_status_logs_and_changes_nothing(
+    payment_client: PaymentTestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    _, payment_id, reference = await _create_order_and_attempt(payment_client)
+
+    with caplog.at_level(logging.ERROR, logger="app.services.payment_events"):
+        await _run_payment_event(payment_client, "refund.processed", reference)
+
+    assert "payment.invalid_transition" in caplog.text
+    async with payment_client.session_factory() as session:
+        payment = await session.get(Payment, payment_id)
+    assert payment is not None
+    assert payment.status == "initiated"
+
+
+async def test_refund_payment_calls_the_provider_once(
+    payment_client: PaymentTestClient,
+) -> None:
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
+    cancelled = await payment_client.client.post(f"/api/v1/orders/{order_id}/cancel")
+    assert cancelled.status_code == 200
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(Payment)
+            .where(Payment.id == payment_id)
+            .values(status="refund_pending")
+        )
+
+    await refund_payment_impl(
+        payment_id,
+        session_factory=payment_client.session_factory,
+        provider=payment_client.provider,
+    )
+
+    assert payment_client.provider.refund_calls == [
+        (reference, 500_000 + DELIVERY_FEE_MINOR, "NGN")
+    ]
+    async with payment_client.session_factory() as session:
+        payment = await session.get(Payment, payment_id)
+    assert payment is not None
+    assert payment.status == "refund_pending"
+
+
+async def test_refund_pending_and_processing_webhooks_change_nothing(
+    payment_client: PaymentTestClient,
+) -> None:
+    _, payment_id, reference = await _create_order_and_attempt(payment_client)
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(Payment)
+            .where(Payment.id == payment_id)
+            .values(status="refund_pending")
+        )
+
+    for event_type in ("refund.pending", "refund.processing"):
+        await _run_payment_event(payment_client, event_type, reference)
+
+    async with payment_client.session_factory() as session:
+        payment = await session.get(Payment, payment_id)
+    assert payment is not None
+    assert payment.status == "refund_pending"
+
+
+async def test_no_refund_is_started_for_a_duplicate_payment(
+    payment_client: PaymentTestClient,
+) -> None:
+    order_id, payment_id, reference = await _create_order_and_attempt(payment_client)
+    async with payment_client.session_factory.begin() as session:
+        await session.execute(
+            update(Order).where(Order.id == order_id).values(status="preparing")
+        )
+    payment_client.provider.verify_result = _success_result()
+    queued_refunds: list[int] = []
+
+    await _run_payment_event(
+        payment_client, "charge.success", reference, enqueue_refund=queued_refunds
+    )
+
+    async with payment_client.session_factory() as session:
+        payment = await session.get(Payment, payment_id)
+    assert payment is not None
+    assert payment.status == "needs_review"
+    assert queued_refunds == []
+    assert payment_client.provider.refund_calls == []

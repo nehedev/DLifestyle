@@ -6,14 +6,14 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Order, OrderItem, Payment
+from app.models import Order, Payment
 from app.payments.protocol import PaymentEvent, PaymentProvider
-from app.services.menu import is_orderable, load_menu_items_with_days
-from app.services.store_settings import (
-    StoreNotConfigured,
-    has_cutoff_passed,
-    require_store_settings,
+from app.services.orders import (
+    OrderCanNoLongerBeFulfilled,
+    UnavailableMenuItems,
+    can_still_be_fulfilled,
 )
+from app.services.store_settings import StoreNotConfigured
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -26,32 +26,10 @@ async def _can_still_be_fulfilled(
     now: datetime,
 ) -> bool:
     try:
-        store_settings = await require_store_settings(session)
-    except StoreNotConfigured:
+        await can_still_be_fulfilled(session, order=order)
+    except (StoreNotConfigured, OrderCanNoLongerBeFulfilled, UnavailableMenuItems):
         return False
-    if has_cutoff_passed(
-        store_settings,
-        fulfillment_date=order.fulfillment_date,
-        now=now,
-    ):
-        return False
-    order_items = list(
-        await session.scalars(
-            select(OrderItem)
-            .where(OrderItem.order_id == order.id)
-            .order_by(OrderItem.menu_item_id)
-        )
-    )
-    menu_items = await load_menu_items_with_days(
-        session, [item.menu_item_id for item in order_items]
-    )
-    menu_items_by_id = {menu_item.id: menu_item for menu_item in menu_items}
-    weekday = order.fulfillment_date.isoweekday()
-    return all(
-        item.menu_item_id in menu_items_by_id
-        and is_orderable(menu_items_by_id[item.menu_item_id], weekday=weekday)
-        for item in order_items
-    )
+    return True
 
 
 async def _conditional_payment_transition(
@@ -288,6 +266,7 @@ async def _process_payment_failed(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     changed = False
+    cancelled_order_id: int | None = None
     async with session_factory() as session:
         async with session.begin():
             payment = await session.scalar(
@@ -313,16 +292,19 @@ async def _process_payment_failed(
                 updated_at=now,
             )
             if changed and order.status == "pending":
-                await _conditional_order_transition(
+                if await _conditional_order_transition(
                     session,
                     order=order,
                     expected_status="pending",
                     new_status="cancelled",
                     updated_at=now,
-                )
+                ):
+                    cancelled_order_id = order.id
 
     if changed:
         celery_app.send_task("send_payment_failed_email", args=[payment.id])
+    if cancelled_order_id is not None:
+        celery_app.send_task("send_order_cancelled_email", args=[cancelled_order_id])
 
 
 async def _process_refund_event(
