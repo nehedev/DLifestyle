@@ -258,6 +258,7 @@ async def _process_charge_success(
         enqueue_refund(enqueue_refund_id)
     if became_paid:
         celery_app.send_task("send_order_confirmation_email", args=[order.id])
+        celery_app.send_task("send_new_order_email", args=[order.id])
 
 
 async def _process_payment_failed(

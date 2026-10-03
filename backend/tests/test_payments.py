@@ -462,7 +462,8 @@ async def test_verified_charge_success_marks_payment_and_order_paid_once(
     assert payment_client.provider.verify_references == [reference]
     assert queued_refunds == []
     assert payment_client.enqueued_tasks == [
-        ("send_order_confirmation_email", [order_id])
+        ("send_order_confirmation_email", [order_id]),
+        ("send_new_order_email", [order_id]),
     ]
 
 
