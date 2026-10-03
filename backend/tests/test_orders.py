@@ -1,159 +1,35 @@
 import asyncio
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from conftest import (
+    DELIVERY_FEE_MINOR,
+    PICKUP_CONTACT,
+    OrderTestClient,
+    business_today,
+)
+from conftest import (
+    ORDER_CONTACT as CONTACT,
+)
+from conftest import (
+    order_payload as _order_payload,
+)
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from app.api.dependencies import CurrentUser, get_current_user
-from app.core.config import settings
-from app.db.session import get_session
 from app.main import app
-from app.models import MenuItem, MenuItemDay, Order, OrderItem, Payment, User
-from app.workers.celery_app import celery_app
-
-BUSINESS_ZONE = ZoneInfo(settings.business_timezone)
-DELIVERY_FEE_MINOR = 1500
-MAX_ADVANCE_DAYS = 7
-CUTOFF = time(16, 0)
+from app.models import MenuItem, Order, OrderItem, Payment, User
 
 
-def business_today() -> date:
-    return datetime.now(UTC).astimezone(BUSINESS_ZONE).date()
-
-
-def a_served_day(offset: int = 1) -> date:
+def a_served_day(offset: int = 1):
     return business_today() + timedelta(days=offset)
-
-
-CONTACT = {
-    "name": "Ada Obi",
-    "phone": "+2348012345678",
-    "address": "12 Example Street, Lekki",
-}
-PICKUP_CONTACT = {"name": "Ada Obi", "phone": "+2348012345678"}
-
-
-@dataclass
-class OrderTestClient:
-    client: AsyncClient
-    session_factory: async_sessionmaker[AsyncSession]
-    user_id: int
-    user: User
-    enqueued_tasks: list[tuple[str, list[int] | None]] = field(default_factory=list)
-
-    async def configure_store(
-        self,
-        *,
-        delivery_fee_minor: int = DELIVERY_FEE_MINOR,
-        cutoff: time = CUTOFF,
-        max_advance_days: int = MAX_ADVANCE_DAYS,
-    ) -> None:
-        async with self.session_factory.begin() as session:
-            from app.models import StoreSettings
-
-            session.add(
-                StoreSettings(
-                    id=1,
-                    delivery_fee_minor=delivery_fee_minor,
-                    order_cutoff_time=cutoff,
-                    max_advance_days=max_advance_days,
-                    updated_at=datetime.now(UTC),
-                )
-            )
-
-    async def add_menu_item(
-        self,
-        *,
-        name: str = "Jollof rice + chicken",
-        price_minor: int = 350_000,
-        weekdays: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7),
-        is_active: bool = True,
-        is_sold_out: bool = False,
-    ) -> int:
-        async with self.session_factory.begin() as session:
-            now = datetime.now(UTC)
-            menu_item = MenuItem(
-                name=name,
-                price_minor=price_minor,
-                is_active=is_active,
-                is_sold_out=is_sold_out,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(menu_item)
-            await session.flush()
-            session.add_all(
-                MenuItemDay(menu_item_id=menu_item.id, weekday=weekday)
-                for weekday in weekdays
-            )
-            return menu_item.id
-
-
-@pytest_asyncio.fixture
-async def order_client(
-    test_engine: AsyncEngine,
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[OrderTestClient]:
-    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
-    async with session_factory.begin() as session:
-        user = User(
-            auth0_sub="auth0|orders-test",
-            email="orders-test@example.com",
-            first_name="Ada",
-            last_name="Obi",
-            created_at=datetime.now(UTC),
-        )
-        session.add(user)
-        await session.flush()
-        user_id = user.id
-
-    detached_user = User(
-        id=user_id,
-        auth0_sub="auth0|orders-test",
-        email="orders-test@example.com",
-        first_name="Ada",
-        last_name="Obi",
-        created_at=datetime.now(UTC),
-    )
-    enqueued_tasks: list[tuple[str, list[int] | None]] = []
-
-    def capture_task(task_name: str, args: list[int] | None = None, **_: Any) -> None:
-        enqueued_tasks.append((task_name, args))
-
-    monkeypatch.setattr(celery_app, "send_task", capture_task)
-
-    async def override_get_session() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    async def override_current_user() -> CurrentUser:
-        return CurrentUser(user=detached_user, roles=frozenset())
-
-    app.dependency_overrides[get_session] = override_get_session
-    app.dependency_overrides[get_current_user] = override_current_user
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://testserver",
-        ) as client:
-            yield OrderTestClient(
-                client,
-                session_factory,
-                user_id,
-                detached_user,
-                enqueued_tasks,
-            )
-    finally:
-        app.dependency_overrides.pop(get_session, None)
-        app.dependency_overrides.pop(get_current_user, None)
 
 
 async def _order_count(
@@ -166,32 +42,6 @@ async def _order_count(
         )
     assert count is not None
     return count
-
-
-def _order_payload(
-    menu_item_ids: list[int],
-    *,
-    fulfillment_type: str = "delivery",
-    fulfillment_date: date | None = None,
-    contact: dict[str, Any] | None = None,
-    notes: str | None = None,
-    quantities: list[int] | None = None,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    quantities = quantities or [1] * len(menu_item_ids)
-    payload: dict[str, Any] = {
-        "items": [
-            {"menu_item_id": menu_item_id, "quantity": quantity}
-            for menu_item_id, quantity in zip(menu_item_ids, quantities, strict=True)
-        ],
-        "fulfillment_type": fulfillment_type,
-        "fulfillment_date": (fulfillment_date or a_served_day()).isoformat(),
-        "contact": contact if contact is not None else dict(CONTACT),
-        "notes": notes,
-    }
-    if extra:
-        payload.update(extra)
-    return payload
 
 
 async def test_store_not_configured_returns_503(
@@ -760,3 +610,152 @@ async def test_concurrent_cancel_cancels_once(
     async with order_client.session_factory() as session:
         order_items = list(await session.scalars(select(OrderItem)))
     assert len(order_items) == 1
+
+
+async def _insert_order(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: int,
+    created_at: datetime,
+    fulfillment_date: Any = None,
+    status: str = "pending",
+) -> int:
+    async with session_factory.begin() as session:
+        session.add(
+            order := Order(
+                user_id=user_id,
+                status=status,
+                fulfillment_type="pickup",
+                fulfillment_date=fulfillment_date or a_served_day(),
+                contact={
+                    "name": "Ada Obi",
+                    "phone": "+2348012345678",
+                    "address": None,
+                },
+                items_total_minor=100_000,
+                delivery_fee_minor=0,
+                total_minor=100_000,
+                currency="NGN",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await session.flush()
+        return order.id
+
+
+async def test_cursor_pagination_orders_by_created_at_then_id_without_gaps(
+    order_client: OrderTestClient,
+) -> None:
+    base = datetime.now(UTC) - timedelta(hours=5)
+    expected_ids: list[int] = []
+    for index in range(7):
+        expected_ids.append(
+            await _insert_order(
+                order_client.session_factory,
+                user_id=order_client.user_id,
+                created_at=base + timedelta(minutes=index // 2),
+            )
+        )
+    # Two orders share created_at so the id tiebreak has to matter.
+    all_pages: list[int] = []
+    cursor: str | None = None
+    for _ in range(10):
+        params: dict[str, Any] = {"limit": 3}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = await order_client.client.get("/api/v1/orders", params=params)
+        assert page.status_code == 200
+        body = page.json()
+        all_pages.extend(order["id"] for order in body["items"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+
+    assert cursor is None
+    assert len(all_pages) == len(set(all_pages)) == len(expected_ids)
+    assert set(all_pages) == set(expected_ids)
+    assert all_pages == sorted(expected_ids, reverse=True)
+
+
+async def test_cursor_pagination_covers_one_item_at_a_time(
+    order_client: OrderTestClient,
+) -> None:
+    base = datetime.now(UTC) - timedelta(hours=2)
+    for index in range(3):
+        await _insert_order(
+            order_client.session_factory,
+            user_id=order_client.user_id,
+            created_at=base + timedelta(minutes=index),
+        )
+
+    seen: list[int] = []
+    cursor: str | None = None
+    while True:
+        params: dict[str, Any] = {"limit": 1}
+        if cursor is not None:
+            params["cursor"] = cursor
+        body = (await order_client.client.get("/api/v1/orders", params=params)).json()
+        assert len(body["items"]) == 1
+        seen.append(body["items"][0]["id"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+
+    assert len(seen) == len(set(seen)) == 3
+
+
+async def test_a_paid_order_cannot_be_cancelled_by_the_customer(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item()
+    created = await order_client.client.post(
+        "/api/v1/orders", json=_order_payload([menu_item_id])
+    )
+    order_id = created.json()["id"]
+
+    await _mark_order_paid(order_client.session_factory, order_id=order_id)
+    response = await order_client.client.post(f"/api/v1/orders/{order_id}/cancel")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "order_not_pending"}
+    assert order_client.enqueued_tasks == []
+
+
+async def _mark_order_paid(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    order_id: int,
+) -> None:
+    async with session_factory.begin() as session:
+        await session.execute(
+            update(Order)
+            .where(Order.id == order_id)
+            .values(status="paid", updated_at=datetime.now(UTC))
+        )
+
+
+async def test_cancel_keeps_the_stored_fulfillment_snapshot(
+    order_client: OrderTestClient,
+) -> None:
+    await order_client.configure_store()
+    menu_item_id = await order_client.add_menu_item(
+        name="Snap dish", price_minor=125_000
+    )
+    created = await order_client.client.post(
+        "/api/v1/orders",
+        json=_order_payload([menu_item_id], quantities=[2], notes="No pepper"),
+    )
+    order_id = created.json()["id"]
+
+    cancelled = await order_client.client.post(f"/api/v1/orders/{order_id}/cancel")
+
+    assert cancelled.status_code == 200
+    body = cancelled.json()
+    assert body["status"] == "cancelled"
+    assert body["notes"] == "No pepper"
+    assert body["items"] == [
+        {"name": "Snap dish", "quantity": 2, "unit_price_minor": 125_000}
+    ]
+    assert body["contact"] == CONTACT
