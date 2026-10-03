@@ -6,3 +6,4 @@ class MeResponse(BaseModel):
     email: str
     first_name: str
     last_name: str | None
+    is_owner: bool

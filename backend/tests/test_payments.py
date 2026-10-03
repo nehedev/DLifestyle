@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.api.dependencies import get_current_user, get_session
+from app.api.dependencies import CurrentUser, get_current_user, get_session
 from app.core.config import settings
 from app.main import app
 from app.models import (
@@ -218,8 +218,8 @@ async def payment_client(
         async with session_factory() as session:
             yield session
 
-    async def override_current_user() -> User:
-        return detached_user
+    async def override_current_user() -> CurrentUser:
+        return CurrentUser(user=detached_user, roles=frozenset())
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_current_user

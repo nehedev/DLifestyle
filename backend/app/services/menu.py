@@ -7,6 +7,16 @@ from sqlalchemy.orm import selectinload
 from app.models import MenuItem
 
 
+async def list_active_menu_items(session: AsyncSession) -> list[MenuItem]:
+    statement = (
+        select(MenuItem)
+        .where(MenuItem.is_active.is_(True))
+        .options(selectinload(MenuItem.days))
+        .order_by(MenuItem.name)
+    )
+    return list(await session.scalars(statement))
+
+
 async def load_menu_items_with_days(
     session: AsyncSession,
     menu_item_ids: Iterable[int],

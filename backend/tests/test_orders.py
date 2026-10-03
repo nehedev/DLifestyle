@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import CurrentUser, get_current_user
 from app.core.config import settings
 from app.db.session import get_session
 from app.main import app
@@ -134,8 +134,8 @@ async def order_client(
         async with session_factory() as session:
             yield session
 
-    async def override_current_user() -> User:
-        return detached_user
+    async def override_current_user() -> CurrentUser:
+        return CurrentUser(user=detached_user, roles=frozenset())
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_current_user
@@ -641,8 +641,8 @@ async def _insert_order_for_user(
 
 
 def _fixed_user(user: User):
-    async def override_current_user() -> User:
-        return user
+    async def override_current_user() -> CurrentUser:
+        return CurrentUser(user=user, roles=frozenset())
 
     return override_current_user
 

@@ -13,10 +13,9 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import CurrentUser, get_current_user
 from app.core.cursors import InvalidCursor
 from app.db.session import get_session
-from app.models import User
 from app.payments.dependencies import get_payment_provider
 from app.payments.protocol import PaymentProvider
 from app.schemas.orders import (
@@ -53,20 +52,21 @@ logger = logging.getLogger(__name__)
 
 @router.get("/me", response_model=MeResponse)
 async def get_me(
-    user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
 ) -> MeResponse:
     return MeResponse(
-        id=user.id,
-        email=user.email,
-        first_name=user.first_name,
-        last_name=user.last_name,
+        id=current_user.user.id,
+        email=current_user.user.email,
+        first_name=current_user.user.first_name,
+        last_name=current_user.user.last_name,
+        is_owner=current_user.is_owner,
     )
 
 
 @router.post("/orders", response_model=OrderResponse)
 async def post_order(
     request: OrderCreate,
-    user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     idempotency_key: Annotated[
         str | None,
@@ -76,7 +76,7 @@ async def post_order(
     try:
         return await create_order(
             session,
-            user=user,
+            user=current_user.user,
             request=request,
             idempotency_key=idempotency_key,
         )
@@ -104,7 +104,7 @@ async def post_order(
 
 @router.get("/orders", response_model=CursorPage[OrderResponse])
 async def get_orders(
-    user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: str | None = None,
@@ -112,7 +112,7 @@ async def get_orders(
     try:
         return await list_orders(
             session,
-            user_id=user.id,
+            user_id=current_user.user.id,
             limit=limit,
             cursor=cursor,
         )
@@ -126,12 +126,12 @@ async def get_orders(
 @router.get("/orders/{order_id}", response_model=OrderDetailResponse)
 async def get_order_by_id(
     order_id: int,
-    user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> OrderDetailResponse:
     order = await get_order_detail(
         session,
-        user_id=user.id,
+        user_id=current_user.user.id,
         order_id=order_id,
     )
     if order is None:
@@ -142,11 +142,15 @@ async def get_order_by_id(
 @router.post("/orders/{order_id}/cancel", response_model=OrderResponse)
 async def post_cancel_order(
     order_id: int,
-    user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> OrderResponse:
     try:
-        return await cancel_order(session, user_id=user.id, order_id=order_id)
+        return await cancel_order(
+            session,
+            user_id=current_user.user.id,
+            order_id=order_id,
+        )
     except OrderNotFound as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
     except OrderNotCancellable as error:
@@ -159,14 +163,14 @@ async def post_cancel_order(
 @router.post("/orders/{order_id}/pay", response_model=PayResponse)
 async def post_pay_order(
     order_id: int,
-    user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     provider: Annotated[PaymentProvider, Depends(get_payment_provider)],
 ) -> PayResponse:
     try:
         authorization_url = await initialize_payment(
             session,
-            user=user,
+            user=current_user.user,
             order_id=order_id,
             provider=provider,
         )

@@ -1,9 +1,9 @@
 import asyncio
 import base64
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import jwt
@@ -11,10 +11,12 @@ import pytest
 import pytest_asyncio
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.api.dependencies import CurrentUser, get_owner_user
 from app.core import auth0
 from app.core.auth0 import Auth0TokenVerifier
 from app.core.config import settings
@@ -58,6 +60,7 @@ class AuthTestClient:
             settings.auth0_email_claim: "alice@example.com",
             settings.auth0_first_name_claim: "Alice",
             settings.auth0_last_name_claim: "Lovelace",
+            settings.auth0_roles_claim: [],
         }
         if overrides is not None:
             claims.update(overrides)
@@ -181,7 +184,14 @@ async def test_me_provisions_and_syncs_user(
     )
     assert first_response.status_code == 200
     first_profile = first_response.json()
-    assert set(first_profile) == {"id", "email", "first_name", "last_name"}
+    assert set(first_profile) == {
+        "id",
+        "email",
+        "first_name",
+        "last_name",
+        "is_owner",
+    }
+    assert first_profile["is_owner"] is False
     assert first_profile["email"] == "alice@example.com"
     assert first_profile["first_name"] == "Alice"
     assert first_profile["last_name"] == "Lovelace"
@@ -203,6 +213,7 @@ async def test_me_provisions_and_syncs_user(
         "email": "updated@example.com",
         "first_name": "Ada",
         "last_name": "Byron",
+        "is_owner": False,
     }
     assert len(auth_client.jwks_requests) == 1
     assert len(auth_client.enqueued_tasks) == 1
@@ -462,3 +473,128 @@ async def test_the_email_conflict_is_decided_after_the_insert_is_attempted(
             await users_service.resolve_current_user(session, claims)
 
     assert order == ["insert", "check"]
+
+
+@pytest.mark.parametrize(
+    ("roles_claim", "expected_is_owner"),
+    [
+        (["owner"], True),
+        (["customer", "owner"], True),
+        (["customer"], False),
+        ([], False),
+    ],
+)
+async def test_roles_claim_decides_is_owner(
+    auth_client: AuthTestClient,
+    roles_claim: list[str] | None,
+    expected_is_owner: bool,
+) -> None:
+    overrides = {} if roles_claim is None else {settings.auth0_roles_claim: roles_claim}
+    remove_claims = () if roles_claim is not None else (settings.auth0_roles_claim,)
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={
+            "Authorization": f"Bearer "
+            f"{auth_client.token(overrides, remove_claims=remove_claims)}"
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["is_owner"] is expected_is_owner
+
+
+@pytest.mark.parametrize(
+    "roles_claim",
+    ["owner", None, 42, {"name": "owner"}],
+)
+async def test_a_malformed_roles_claim_grants_no_roles(
+    auth_client: AuthTestClient,
+    roles_claim: Any,
+) -> None:
+    response = await auth_client.client.get(
+        "/api/v1/me",
+        headers={
+            "Authorization": f"Bearer "
+            f"{auth_client.token({settings.auth0_roles_claim: roles_claim})}"
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["is_owner"] is False
+
+
+@pytest.fixture
+def owner_probe_app(test_engine: AsyncEngine) -> Iterator[FastAPI]:
+    """A throwaway app whose single route stands in for an admin endpoint.
+
+    Admin routes arrive in a later milestone. This proves the OwnerUser
+    dependency itself: no token is 401, a valid token without the owner
+    role is 403, and only the owner role passes.
+    """
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+
+    async def override_get_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    probe = FastAPI()
+
+    @probe.get("/probe", response_model=dict[str, bool])
+    async def read_probe(
+        current_user: Annotated[CurrentUser, Depends(get_owner_user)],
+    ) -> dict[str, bool]:
+        return {"is_owner": current_user.is_owner}
+
+    probe.dependency_overrides[get_session] = override_get_session
+    yield probe
+    probe.dependency_overrides.clear()
+
+
+async def _probe(
+    owner_probe_app: FastAPI,
+    token: str | None,
+) -> httpx.Response:
+    async with AsyncClient(
+        transport=ASGITransport(app=owner_probe_app),
+        base_url="http://testserver",
+    ) as client:
+        return await client.get(
+            "/probe",
+            headers={} if token is None else {"Authorization": f"Bearer {token}"},
+        )
+
+
+async def test_owner_route_without_a_token_is_401(
+    owner_probe_app: FastAPI,
+) -> None:
+    response = await _probe(owner_probe_app, None)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+
+
+async def test_owner_route_with_a_valid_token_without_the_role_is_403(
+    owner_probe_app: FastAPI,
+    auth_client: AuthTestClient,
+) -> None:
+    response = await _probe(owner_probe_app, auth_client.token())
+    assert response.status_code == 403
+    assert response.json() == {"detail": "owner_required"}
+
+
+async def test_owner_route_with_an_invalid_token_is_401_not_403(
+    owner_probe_app: FastAPI,
+    auth_client: AuthTestClient,
+) -> None:
+    response = await _probe(owner_probe_app, "not-a-jwt")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+
+
+async def test_owner_route_with_the_owner_role_passes(
+    owner_probe_app: FastAPI,
+    auth_client: AuthTestClient,
+) -> None:
+    response = await _probe(
+        owner_probe_app,
+        auth_client.token({settings.auth0_roles_claim: ["owner"]}),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"is_owner": True}
