@@ -1,12 +1,35 @@
-import { ADDONS, ITEMS } from './data'
+import type { Contact, OrderResponse } from './api'
 
-export interface Line { key: string; id: string; qty: number; addons: string[]; date?: string }
-export interface Order { no: string; lines: Line[]; total: number; name: string; phone: string; address: string; mode: string; pay: string }
+export type Kind = 'food' | 'service'
 
-export const itemOf = (id: string) => ITEMS.find(i => i.id === id)!
-export const unit = (l: Line) => itemOf(l.id).price + l.addons.reduce((s, a) => s + ADDONS.find(x => x.id === a)!.price, 0)
-export const fees = (lines: Line[], mode: string) => {
-  const hasF = lines.some(l => itemOf(l.id).kind === 'food')
-  const hasS = lines.some(l => itemOf(l.id).kind === 'service')
-  return (hasF && mode === 'delivery' ? 1500 : 0) + (hasS ? 2000 : 0)
+/** A menu item or service shaped for the storefront UI. */
+export interface CatalogItem {
+  kind: Kind
+  id: number
+  key: string
+  name: string
+  desc: string
+  /** Integer minor units; null for services, which are quoted by the owner. */
+  price_minor: number | null
+  category: string
+  image_url: string | null
+  image_alt: string | null
+  sold_out: boolean
+  weekdays: number[]
 }
+
+export interface CartLine {
+  key: string
+  kind: Kind
+  id: number
+  name: string
+  unit_price_minor: number
+  qty: number
+  /** Service requests only. */
+  preferred_date?: string
+}
+
+export const foodKey = (id: number) => `food:${id}`
+export const serviceKey = (id: number, date?: string) => `service:${id}:${date ?? ''}`
+
+export type { Contact, OrderResponse }
