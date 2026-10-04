@@ -1,6 +1,6 @@
 # AGENTS.md — Ficmart Backend
 
-Backend for Dami's Lifestyle Services, a one-owner food and home-services business in Nigeria. Customers order made-to-order meals from a weekly menu (pickup or delivery) and pay online; they also send service requests (catering, cleaning, errands, home organization). The owner runs the business through admin endpoints. FastAPI + async SQLAlchemy + Celery. Auth is Auth0 (verify-only). Payments are Paystack behind a provider abstraction.
+Backend for Dami's Lifestyle Services, a one-owner food and home-services business in Nigeria. Customers order made-to-order meals from a weekly menu (pickup or delivery) and pay online; they also send service requests (catering, cleaning, errands, home organization). The owner runs the business through admin endpoints at `/sudo`. FastAPI + async SQLAlchemy + Celery. Auth is Google (ID-token verify-only, roles in the database). Payments are Paystack behind a provider abstraction. Images are Cloudinary signed uploads.
 
 Read this file fully before writing code. Everything about the data model, flows, API, settings, and tests is in `docs/spec.md`. If the two files disagree, stop and ask.
 
@@ -45,7 +45,7 @@ CI runs Ruff, Pyright, and `pytest` against a PostgreSQL 17 service container.
 
 ## 2. Stack (fixed)
 
-Python 3.13 (`requires-python = ">=3.13"`), uv, FastAPI, Pydantic v2 + pydantic-settings, SQLAlchemy 2.x async (`asyncpg`), Alembic (async template), PostgreSQL 17, Celery + Redis 7 (+ beat), Auth0, Paystack, Resend (HTTP API), httpx (async), pytest + pytest-asyncio + httpx, Ruff + Pyright (dev dependencies).
+Python 3.13 (`requires-python = ">=3.13"`), uv, FastAPI, Pydantic v2 + pydantic-settings, SQLAlchemy 2.x async (`asyncpg`), Alembic (async template), PostgreSQL 17, Celery + Redis 7 (+ beat), Google Identity Services (ID-token verify-only), Paystack, Resend (HTTP API), Cloudinary (signed uploads), httpx (async), pytest + pytest-asyncio + httpx, Ruff + Pyright (dev dependencies).
 
 Docker Compose services: `api`, `worker`, `beat`, `postgres`, `redis`. Deployment is undecided: **do not add deployment config.**
 
@@ -58,7 +58,7 @@ Docker Compose services: `api`, `worker`, `beat`, `postgres`, `redis`. Deploymen
 ```
 app/
   main.py        # FastAPI app + lifespan
-  core/          # settings, Auth0 token verification, logging
+  core/          # settings, Google token verification, logging
   db/            # engine, session, base, naming convention
   models/        # SQLAlchemy models
   schemas/       # Pydantic request/response models
@@ -139,7 +139,7 @@ All settings come from environment variables via pydantic-settings. **None has a
 11. A browser redirect or callback is never proof of payment. Only the verified gateway webhook is.
 12. Never mark a payment `failed` because a gateway call failed or timed out. Leave it `initiated`.
 13. Paystack sends no failure webhook. Only `charge.success` and `refund.*` events are acted on; every other event type is acknowledged and ignored.
-14. Admin endpoints require the `owner` role taken from the verified token. Never trust a role from the request body, query, or headers.
+14. Admin endpoints require `users.role = 'admin'` on the local row, resolved from the verified token. Never trust a role from the request body, query, or headers.
 15. Menu items and services are never deleted; they are deactivated.
 ---
 
@@ -147,8 +147,9 @@ All settings come from environment variables via pydantic-settings. **None has a
 
 **Always**
 - Add tests with every change. Add a migration with every schema change.
-- Use explicit timeouts on every external HTTP call (Auth0 JWKS, Paystack, Resend).
+- Use explicit timeouts on every external HTTP call (Google JWKS, Paystack, Resend, Cloudinary).
 - Send email only from Celery tasks, with a deterministic Resend idempotency key.
+- Store uploaded images as Cloudinary URLs only; never proxy or persist image bytes.
 - Log anomalies and manual-review events at `ERROR` using the stable event names in `docs/spec.md` section 9.
 
 **Ask first**
@@ -157,7 +158,7 @@ All settings come from environment variables via pydantic-settings. **None has a
 - Any value not given in the docs (timeouts, limits, intervals, thresholds).
 
 **Never**
-- Implement Google OAuth or any OAuth/OIDC flow in FastAPI. Auth0 is verify-only.
+- Implement a server-side OAuth/OIDC flow in FastAPI. Auth is ID-token verify-only (Google). Roles come from the database, never from the token.
 - Add `/register`, `/login`, or password fields.
 - Add endpoints that are not listed in `docs/spec.md` section 6.
 - Add a cart table (the cart is client-side), or any stock or inventory tracking.
@@ -180,7 +181,7 @@ A change is done when `ruff check`, `ruff format --check`, `pyright`, and `pytes
 - `TEST_DATABASE_URL` is a test-only environment variable (listed in `.env.example`, not an app setting). It points to a dedicated test database that **must differ from `DATABASE_URL`**; the test setup refuses to run if they are equal. Locally it targets the Compose `postgres` service; in CI it targets a PostgreSQL 17 service container.
 - Setup: create the test database if missing, build the schema once per session with `metadata.create_all`, and `TRUNCATE ... RESTART IDENTITY CASCADE` all tables between tests. Services commit for real, so do not wrap tests in an outer rolled-back transaction.
 - Concurrency tests open separate sessions and run them concurrently (`asyncio.TaskGroup`), then assert on committed state.
-- Override dependencies for the current user, payment provider, and Resend client (no real Auth0). Mock outbound HTTP with `httpx.MockTransport`. No real network calls. Redis is not needed in tests.
+- Override dependencies for the current user, payment provider, and Resend client (no real Google). Mock outbound HTTP with `httpx.MockTransport`. No real network calls. Redis is not needed in tests.
 - Do not run Celery tasks eagerly in the pytest loop. Test the async `_impl` functions directly.
 - Must-have test list: `docs/spec.md` section 11.
 

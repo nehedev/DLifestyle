@@ -6,21 +6,17 @@ This file is the full backend specification. Anything not specified here or in `
 
 ---
 
-## 1. Auth (Auth0)
+## 1. Auth (Google)
 
-- The frontend authenticates with Auth0 and sends `Authorization: Bearer <access_token>`.
-- The backend **only verifies** tokens: RS256 signature via the tenant JWKS, plus `iss`, `aud`, `exp`. Settings: `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`.
+- The frontend authenticates with Google Identity Services (GIS) and sends `Authorization: Bearer <google_id_token>`.
+- The backend **only verifies** Google ID tokens: RS256 signature via Google's JWKS, plus `iss`, `aud`, and `exp`. Setting: `GOOGLE_CLIENT_ID`.
 - JWKS is cached with a TTL (`JWKS_CACHE_TTL_SECONDS`). The fetch must not block the event loop (async httpx or `asyncio.to_thread`) and has an explicit timeout (`JWKS_TIMEOUT_SECONDS`).
-- `CurrentUser` dependency verifies the token and resolves the local `users` row by Auth0 `sub`.
-- No `/register`, no `/login`, no password fields. Users sign in with Google via an Auth0 social connection; the backend is provider-agnostic. Do not implement any OAuth/OIDC flow in FastAPI.
-- **Claims:** email, first name, last name, and roles arrive as namespaced custom claims added to the access token by an Auth0 Action. Settings: `AUTH0_EMAIL_CLAIM`, `AUTH0_FIRST_NAME_CLAIM`, `AUTH0_LAST_NAME_CLAIM`, `AUTH0_ROLES_CLAIM`. The backend never calls `/userinfo`.
-  - Email and first name are required and non-empty. If either is missing or empty, return `401`.
-  - Last name is optional. A missing or empty last-name claim is stored as `NULL`.
-  - The roles claim is a list of role names. A missing roles claim means no roles (not an error).
-  - `email_verified` is not required.
-- **Owner role:** a user is the owner when the roles claim contains `owner`. Roles are read from each verified token and are not stored in the database. `OwnerUser` dependency: valid token plus `owner` role, otherwise `403`. Never accept a role from anything but the verified token.
-- **Provisioning:** the `users` row is created lazily on the user's first authenticated request, inside `CurrentUser`. Use an insert that tolerates concurrent first requests (unique `auth0_sub`; on conflict, re-select). Only the request that actually inserted the row enqueues the welcome email, after commit.
-- **Sync:** later authenticated requests sync email, first name, and last name from the verified token.
+- `CurrentUser` dependency verifies the token and resolves the local `users` row by the Google `sub` (`provider_sub`).
+- No `/register`, no `/login`, no password fields, and no server-side OAuth/OIDC flow. The backend is verify-only.
+- **Claims:** a Google ID token carries `email`, `given_name`, and `family_name`. Email and first name are required and non-empty; if either is missing or empty, return `401`. Last name is optional; a missing or empty last name is stored as `NULL`. `email_verified` is not required.
+- **Roles:** roles are stored on the local `users` row (`user` | `admin`) and default to `user`. A user is an admin when `users.role = 'admin'`. `AdminUser` dependency: valid token plus `role = 'admin'`, otherwise `403`. Never accept a role from anything but the stored row. Only an admin can change a role.
+- **Provisioning:** the `users` row is created lazily on the user's first authenticated request, inside `CurrentUser`, with role `user`. Use an insert that tolerates concurrent first requests (unique `provider_sub`; on conflict, re-select). Only the request that actually inserted the row enqueues the welcome email, after commit.
+- **Sync:** later authenticated requests sync email, first name, and last name from the verified token. The role is never synced from the token.
 - **Email conflicts:** if a token's `sub` has no local row but its email already belongs to another user, or a sync would make an email collide with another user, return `409` with `detail` `"account_exists_use_existing_sign_in"`, log `user.email_conflict` at `ERROR`, and write nothing. Never auto-link accounts. The frontend sends the user to sign in with their original method.
 - **Public endpoints** (no token): `GET /menu`, `GET /services`, `GET /store`, and `POST /webhooks/paystack` (authenticated by signature). Everything else requires a token. Customers must sign in to order or send a service request; the WhatsApp button on the site is the no-sign-in path.
 
@@ -30,7 +26,7 @@ This file is the full backend specification. Anything not specified here or in `
 
 Money is stored as **integers in minor units** (kobo). The single currency comes from settings (`CURRENCY`, a 3-letter code, `NGN`). Orders and payments snapshot the currency at creation. All timestamps are `TIMESTAMPTZ`; "business dates" and times are interpreted in `BUSINESS_TIMEZONE` (an IANA name such as `Africa/Lagos`, used through `zoneinfo`).
 
-**users**: `id` (bigint PK), `auth0_sub` (unique, not null), `email` (unique, not null), `first_name` (not null), `last_name` (nullable), `created_at`. Every email addresses the user by `first_name`.
+**users**: `id` (bigint PK), `provider_sub` (unique, not null, the Google `sub`), `email` (unique, not null), `first_name` (not null), `last_name` (nullable), `role` (text, not null, default `user`, `CHECK` in `user`/`admin`), `created_at`. Every email addresses the user by `first_name`.
 
 **menu_items**: `id`, `name`, `description` (nullable), `category` (text, not null), `image_url` (image URL, nullable), `image_alt` (image alt text, nullable), `price_minor` (int, >= 0), `is_active` (hidden from customers when false), `is_sold_out` (visible but not orderable when true), `created_at`, `updated_at`. Items are never deleted (orders reference them); the owner deactivates them.
 
@@ -38,7 +34,7 @@ Money is stored as **integers in minor units** (kobo). The single currency comes
 
 **services**: `id`, `name`, `description`, `is_active`, `sort_order` (int), `created_at`, `updated_at`. Never deleted; the owner deactivates.
 
-**store_settings**: a single row (`id` is always 1, enforced by `CHECK (id = 1)`): `delivery_fee_minor` (int, >= 0), `order_cutoff_time` (time of day, in `BUSINESS_TIMEZONE`), `max_advance_days` (int, >= 0), `updated_at`. The row is created by the owner's first `PUT /admin/store-settings`. Until it exists, ordering is closed.
+**store_settings**: a single row (`id` is always 1, enforced by `CHECK (id = 1)`): `delivery_fee_minor` (int, >= 0), `order_cutoff_time` (time of day, in `BUSINESS_TIMEZONE`), `max_advance_days` (int, >= 0), `updated_at`. The row is created by the admin's first `PUT /sudo/store-settings`. Until it exists, ordering is closed.
 
 **orders**: `id`, `user_id` -> users, `status` (`pending | paid | preparing | ready | completed | cancelled`), `fulfillment_type` (`delivery | pickup`), `fulfillment_date` (date), `contact` (JSONB snapshot, see below), `notes` (nullable text), `items_total_minor`, `delivery_fee_minor` (snapshot; 0 for pickup), `total_minor` (items total + delivery fee), `currency`, `idempotency_key` (nullable string, max 255), `created_at`, `updated_at`. Index on `user_id`. Unique `(user_id, idempotency_key)`.
 
@@ -70,7 +66,7 @@ Rules:
 7. Webhook delivery is at-least-once; processing is idempotent.
 8. Card data is never stored.
 9. Every status change is a conditional, forward-only transition (section 4).
-10. Owner endpoints require the `owner` role from the verified token.
+10. Admin endpoints require `users.role = 'admin'` on the local row, resolved from the verified token.
 
 ---
 
@@ -180,7 +176,7 @@ Payment is confirmed **only** by the gateway webhook, verified server-side. A br
 
 **Customer cancel.** `POST /orders/{id}/cancel`: the order must belong to the current user and be `pending`. Conditional `pending -> cancelled`, then enqueue the cancelled email. Log `order.user_cancelled` at `INFO`. If a payment completes afterwards, the late-payment branch in 5.4 applies. A paid order cannot be cancelled by the customer; they contact the owner.
 
-**Owner cancel.** `POST /admin/orders/{id}/status` with `cancelled`, allowed from `paid` or `preparing`. In **one transaction**: conditional order `paid|preparing -> cancelled`, and the order's `succeeded` payment `succeeded -> refund_pending` (both conditional; if either `rowcount` is wrong, roll back and return `409`). After commit, enqueue `refund_payment` and the order-cancelled email. Log `order.owner_cancelled` at `INFO`. The refund then follows the same webhook handling as above.
+**Owner cancel.** `POST /sudo/orders/{id}/status` with `cancelled`, allowed from `paid` or `preparing`. In **one transaction**: conditional order `paid|preparing -> cancelled`, and the order's `succeeded` payment `succeeded -> refund_pending` (both conditional; if either `rowcount` is wrong, roll back and return `409`). After commit, enqueue `refund_payment` and the order-cancelled email. Log `order.owner_cancelled` at `INFO`. The refund then follows the same webhook handling as above.
 
 ### 5.6 Service requests
 
@@ -191,16 +187,18 @@ Customers request a service and the owner follows up (usually by phone or WhatsA
 - `POST /service-requests/{id}/cancel`: own request, only from `requested` or `contacted`. Conditional transition, otherwise `409`.
 - Owner endpoints are in 5.7.
 
-### 5.7 Owner (admin) endpoints
+### 5.7 Admin endpoints
 
-All under `/admin`, all require `OwnerUser` (`401` without a token, `403` without the `owner` role).
+All under `/sudo`, all require `AdminUser` (`401` without a token, `403` without the `admin` role).
 
-- **Orders:** `GET /admin/orders` (filters `status` and `fulfillment_date`; cursor paginated), `GET /admin/orders/{id}` (any user's order; payments include `id`, `reference`, `provider_transaction_id`, `status`, `amount_minor`, `currency`), `POST /admin/orders/{id}/status` with body `{"status": "preparing" | "ready" | "completed" | "cancelled"}`. Only the transitions in section 4 are accepted (`409` otherwise). Owner status changes send no email in V1.
-- **Payments:** `GET /admin/payments` (filter `status`; cursor paginated) so `needs_review` and `refund_pending` payments are visible to the owner.
-- **Menu:** `GET /admin/menu-items` (all items, including inactive), `POST /admin/menu-items`, `PATCH /admin/menu-items/{id}` (any of `name`, `description`, `category`, `image_url`, `image_alt`, `price_minor`, `weekdays`, `is_active`, `is_sold_out`). No delete. Price edits affect only new orders.
-- **Services:** `GET /admin/services`, `POST /admin/services`, `PATCH /admin/services/{id}` (any of `name`, `description`, `is_active`, `sort_order`). No delete.
-- **Service requests:** `GET /admin/service-requests` (filter `status`; cursor paginated), `GET /admin/service-requests/{id}`, `PATCH /admin/service-requests/{id}` (any of `status`, `quoted_amount_minor`, `owner_note`; status changes follow section 4).
-- **Store settings:** `GET /admin/store-settings`, `PUT /admin/store-settings` (replaces `delivery_fee_minor`, `order_cutoff_time`, `max_advance_days`; creates the row if missing).
+- **Orders:** `GET /sudo/orders` (filters `status` and `fulfillment_date`; cursor paginated), `GET /sudo/orders/{id}` (any user's order; payments include `id`, `reference`, `provider_transaction_id`, `status`, `amount_minor`, `currency`), `POST /sudo/orders/{id}/status` with body `{"status": "preparing" | "ready" | "completed" | "cancelled"}`. Only the transitions in section 4 are accepted (`409` otherwise). Admin status changes send no email in V1.
+- **Payments:** `GET /sudo/payments` (filter `status`; cursor paginated) so `needs_review` and `refund_pending` payments are visible to the admin.
+- **Menu:** `GET /sudo/menu-items` (all items, including inactive), `POST /sudo/menu-items`, `PATCH /sudo/menu-items/{id}` (any of `name`, `description`, `category`, `image_url`, `image_alt`, `price_minor`, `weekdays`, `is_active`, `is_sold_out`). No delete. Price edits affect only new orders.
+- **Services:** `GET /sudo/services`, `POST /sudo/services`, `PATCH /sudo/services/{id}` (any of `name`, `description`, `is_active`, `sort_order`). No delete.
+- **Service requests:** `GET /sudo/service-requests` (filter `status`; cursor paginated), `GET /sudo/service-requests/{id}`, `PATCH /sudo/service-requests/{id}` (any of `status`, `quoted_amount_minor`, `owner_note`; status changes follow section 4).
+- **Store settings:** `GET /sudo/store-settings`, `PUT /sudo/store-settings` (replaces `delivery_fee_minor`, `order_cutoff_time`, `max_advance_days`; creates the row if missing).
+- **Users:** `GET /sudo/users` (cursor paginated), `PATCH /sudo/users/{id}/role` with body `{"role": "user" | "admin"}` to grant or revoke admin. An admin can change any role, including their own; there is no last-admin protection in V1.
+- **Uploads:** `POST /sudo/uploads/sign` returns a signed Cloudinary upload (see section 16). Admin only.
 
 ---
 
@@ -210,14 +208,14 @@ All under `/admin`, all require `OwnerUser` (`401` without a token, `403` withou
 
 **Signed-in customer:** `GET /me`, `POST /orders`, `GET /orders`, `GET /orders/{id}`, `POST /orders/{id}/pay`, `POST /orders/{id}/cancel`, `POST /service-requests`, `GET /service-requests`, `GET /service-requests/{id}`, `POST /service-requests/{id}/cancel`.
 
-**Owner:** the `/admin/...` endpoints in 5.7.
+**Admin:** the `/sudo/...` endpoints in 5.7.
 
 `scripts/seed_catalog.py` seeds the services and the starting menu (section 15) and is safe to run again.
 
 ### Read behavior
 
 - `GET /orders` and `GET /orders/{id}` return only the current user's orders. Another user's order returns `404`. Order detail includes fulfillment fields, contact, notes, items (name, quantity, unit price), totals, and the order's payments, each with only `id`, `status`, `amount_minor`, `currency` (no reference, no provider details).
-- `GET /me` returns `id`, `email`, `first_name`, `last_name` (nullable), and `is_owner`.
+- `GET /me` returns `id`, `email`, `first_name`, `last_name` (nullable), and `role`.
 
 ### Conventions
 
@@ -311,10 +309,11 @@ Setup rules (real PostgreSQL, `TEST_DATABASE_URL`) are in `AGENTS.md` section 8.
 - **Duplicate payment** on an already-paid order goes to `needs_review`, with no refund called.
 - **Refunds:** refund task calls the provider once; `refund.processed` sets `refunded`; `refund.failed` and `refund.needs-attention` set `needs_review`; replayed refund webhooks change nothing.
 - **Cancellation:** user cancel and expiry each cancel once and replay is harmless; expiry never cancels an order with a `succeeded` payment; expiry racing a paid webhook; user cancel racing a webhook.
-- **Owner order flow:** only the listed transitions are accepted; non-owner gets `403`, no token gets `401`; owner cancel of a paid order moves the order to `cancelled` and the payment to `refund_pending` atomically and starts one refund.
-- **Owner catalog and settings:** menu and service create/patch work and never delete; weekday changes apply to new orders only; `PUT /admin/store-settings` creates then updates the single row.
-- **Service requests:** create validates the service is active and the date is not past; customer sees only their own; customer cancel only from `requested` or `contacted`; owner transitions follow section 4; both emails enqueued once.
-- **Users:** lazy creation yields one row under truly concurrent first requests and one welcome email; token without email or first-name claim rejected with `401`; missing or empty last name stored as `NULL`; email conflict returns `409` and writes nothing; roles claim sets `is_owner`.
+- **Admin order flow:** only the listed transitions are accepted; non-admin gets `403`, no token gets `401`; admin cancel of a paid order moves the order to `cancelled` and the payment to `refund_pending` atomically and starts one refund.
+- **Admin catalog and settings:** menu and service create/patch work and never delete; weekday changes apply to new orders only; `PUT /sudo/store-settings` creates then updates the single row.
+- **Service requests:** create validates the service is active and the date is not past; customer sees only their own; customer cancel only from `requested` or `contacted`; admin transitions follow section 4; both emails enqueued once.
+- **Users and roles:** lazy creation yields one row under truly concurrent first requests and one welcome email; a token without email or first-name is rejected with `401`; missing or empty last name stored as `NULL`; email conflict returns `409` and writes nothing; a new user defaults to role `user`; only an admin can change a role and reach `/sudo` (non-admin `403`, no token `401`).
+- **Uploads:** the Cloudinary sign endpoint requires admin and returns a signature that validates against the configured secret.
 - **Read API:** another user's order or request returns `404`; order detail payments expose only the four allowed fields.
 - **Cursor pagination:** stable ordering, no duplicates or gaps across pages, filters honored, invalid cursor rejected.
 - **Concurrency** (separate sessions run concurrently against PostgreSQL): concurrent same-key order creation yields one order; cancel racing payment confirmation ends in one consistent state; two simultaneous `charge.success` events for different payments on one order yield exactly one `paid` and one `needs_review`.
@@ -329,14 +328,9 @@ Values shown go in `.env.example`. `.env.example` also carries `TEST_DATABASE_UR
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL async URL | per environment |
 | `REDIS_URL` | Celery broker | per environment |
-| `AUTH0_DOMAIN` | Tenant domain | per environment |
-| `AUTH0_AUDIENCE` | API audience | per environment |
-| `AUTH0_EMAIL_CLAIM` | Namespaced email claim | per environment |
-| `AUTH0_FIRST_NAME_CLAIM` | Namespaced first-name claim | per environment |
-| `AUTH0_LAST_NAME_CLAIM` | Namespaced last-name claim | per environment |
-| `AUTH0_ROLES_CLAIM` | Namespaced roles claim (list of names) | per environment |
-| `JWKS_CACHE_TTL_SECONDS` | JWKS cache TTL | `3600` |
-| `JWKS_TIMEOUT_SECONDS` | JWKS fetch timeout | `5` |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID (ID-token audience) | per environment |
+| `JWKS_CACHE_TTL_SECONDS` | Google JWKS cache TTL | `3600` |
+| `JWKS_TIMEOUT_SECONDS` | Google JWKS fetch timeout | `5` |
 | `CURRENCY` | 3-letter currency code | `NGN` |
 | `BUSINESS_TIMEZONE` | IANA timezone for dates and the cutoff | `Africa/Lagos` |
 | `PAYMENT_PROVIDER` | Provider selector | `paystack` |
@@ -350,12 +344,16 @@ Values shown go in `.env.example`. `.env.example` also carries `TEST_DATABASE_UR
 | `RESEND_TIMEOUT_SECONDS` | Total timeout | `10` |
 | `EMAIL_FROM_ADDRESS` | Sender on a Resend-verified domain | per environment |
 | `OWNER_NOTIFICATION_EMAIL` | Where owner alerts are sent | per environment |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name | per environment |
+| `CLOUDINARY_API_KEY` | Cloudinary API key | per environment |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret | secret |
+| `CLOUDINARY_UPLOAD_FOLDER` | Folder for menu item images | `damis` |
 | `PENDING_ORDER_TIMEOUT_MINUTES` | Unpaid order hold before expiry | `15` |
 | `EXPIRY_JOB_INTERVAL_MINUTES` | Expiry beat interval | `5` |
 | `CELERY_TASK_MAX_RETRIES` | Retry cap for all tasks | `5` |
 | `CELERY_RETRY_BACKOFF_MAX_SECONDS` | Exponential backoff cap | `600` |
 
-Business values the owner controls at runtime (delivery fee, cutoff time, advance window) are **not** settings; they live in `store_settings` and are changed through `PUT /admin/store-settings`.
+Business values the owner controls at runtime (delivery fee, cutoff time, advance window) are **not** settings; they live in `store_settings` and are changed through `PUT /sudo/store-settings`.
 
 ---
 
@@ -372,7 +370,6 @@ Services: `api`, `worker`, `beat`, `postgres` (PostgreSQL 17), `redis` (Redis 7)
 - Per-day portion limits, item options (such as choice of protein; customers use `notes`), and delivery fees that vary by area.
 - Signed-out (guest) orders or service requests.
 - Order-status, refund, and manual-review emails; WhatsApp or SMS notifications.
-- Image uploads for menu items or galleries.
 - Rate limiting, external alerting, deployment config.
 - Limits on items per order or quantity per item.
 - A refund recovery sweeper.
@@ -385,7 +382,7 @@ Services: `api`, `worker`, `beat`, `postgres` (PostgreSQL 17), `redis` (Redis 7)
 
 **Before go-live:**
 - Paystack sandbox: confirm no failure event exists beyond those documented, and confirm the gateway response when a refund has already been requested for a reference (the `refund_payment` task treats it as success).
-- The owner must `PUT /admin/store-settings` (delivery fee, cutoff time, advance window) before ordering opens, and the Auth0 Action must add the `owner` role to her account.
+- The owner must `PUT /sudo/store-settings` (delivery fee, cutoff time, advance window) before ordering opens, and the first admin's `users.role` must be set to `admin` directly in the database.
 
 ---
 
@@ -412,3 +409,21 @@ Services: `api`, `worker`, `beat`, `postgres` (PostgreSQL 17), `redis` (Redis 7)
 | Semo + vegetable soup + protein | 3500 | Thu | Soups |
 | Amala + ewedu + protein | 3000 | Fri | Soups |
 | White rice + stew + chicken | 3000 | Sat | Rice |
+
+---
+
+## 16. Image uploads (Cloudinary)
+
+Menu item images are uploaded to Cloudinary and only the resulting URL is stored in `menu_items.image_url`.
+
+- `POST /sudo/uploads/sign` (admin only) returns the parameters the browser needs to upload directly to Cloudinary: `cloud_name`, `api_key`, `timestamp`, `folder`, `upload_url`, and `signature`. The signature is a SHA-1 of the sorted, joined upload parameters plus `CLOUDINARY_API_SECRET`, per Cloudinary's signed-upload rules. The API secret never leaves the server.
+- The browser posts the file to `upload_url` and stores the returned `secure_url` on the menu item through the existing create/patch endpoints.
+- Only images are accepted. No data is proxied through the API, and no image bytes are persisted by the backend.
+- Settings: `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`, `CLOUDINARY_UPLOAD_FOLDER`.
+
+## 17. Storefront hosting and the payment callback
+
+- `PAYMENT_CALLBACK_URL` points at a frontend path such as `/payment/callback`. The frontend is a single-page app using the History API, so the web server **must serve `index.html` for unknown non-asset paths** (SPA fallback). This is a static-hosting concern, not a provider-specific one:
+  - The repo ships a dependency-free Node server (`frontend/server.mjs`) that serves `dist/` and falls back to `index.html`; run it with `npm run start`.
+  - Any nginx host can use `try_files $uri $uri/ /index.html;`.
+- The delivery fee is shown only at checkout, never in the cart.
