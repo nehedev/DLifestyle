@@ -25,7 +25,7 @@ export function Cart() {
     return (
       <div className="wrap page empty">
         <h1 className="h2">Your cart is empty</h1>
-        <p>Pick a meal or request a service to get started.</p>
+        <p>Pick a meal or request a service to get started</p>
         <A to="/menu" className="btn lg">
           Browse the menu
         </A>
