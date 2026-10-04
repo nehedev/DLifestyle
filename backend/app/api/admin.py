@@ -26,6 +26,7 @@ from app.schemas.service_requests import (
 )
 from app.schemas.services import ServiceAdmin, ServiceCreate, ServicePatch
 from app.schemas.store import StorePublic, StoreSettingsPut
+from app.schemas.uploads import UploadSignResponse
 from app.schemas.user import UserAdminResponse, UserRolePatch
 from app.services import admin_orders, admin_users
 from app.services import menu as menu_service
@@ -36,6 +37,7 @@ from app.services.service_requests import (
     ServiceRequestNotFound,
 )
 from app.services.store_settings import get_store_settings, put_store_settings
+from app.services.uploads import sign_upload
 
 router = APIRouter(prefix="/sudo", dependencies=[Depends(get_admin_user)])
 
@@ -462,3 +464,16 @@ async def patch_admin_user_role(
     except admin_users.UserNotFound as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
     return _user_response(user)
+
+
+@router.post("/uploads/sign", response_model=UploadSignResponse)
+async def post_uploads_sign() -> UploadSignResponse:
+    result = sign_upload()
+    return UploadSignResponse(
+        cloud_name=result.cloud_name,
+        api_key=result.api_key,
+        timestamp=result.timestamp,
+        folder=result.folder,
+        upload_url=result.upload_url,
+        signature=result.signature,
+    )
