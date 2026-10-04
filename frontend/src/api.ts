@@ -3,7 +3,7 @@
 // money on the client beyond display.
 
 export const API_BASE =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8000'
+  (import.meta.env.API_BASE_URL as string | undefined) ?? 'http://localhost:8000'
 
 export interface MenuItem {
   id: number
