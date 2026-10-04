@@ -27,10 +27,23 @@ export function Requests() {
       ])
       setOrders(orderPage.items)
       setRequests(requestPage.items)
+      setError('')
     } catch {
       setError('We could not load your orders and requests.')
     }
   }, [])
+
+  const runCancel = useCallback(
+    async (action: () => Promise<unknown>, message: string) => {
+      try {
+        await action()
+        await load()
+      } catch {
+        setError(message)
+      }
+    },
+    [load],
+  )
 
   useEffect(() => {
     if (isAuthenticated) void load()
@@ -69,10 +82,12 @@ export function Requests() {
               {order.status === CANCELLABLE_ORDER && (
                 <button
                   className="lnk"
-                  onClick={async () => {
-                    await cancelOrder(order.id)
-                    await load()
-                  }}
+                  onClick={() =>
+                    void runCancel(
+                      () => cancelOrder(order.id),
+                      'That order can no longer be cancelled.',
+                    )
+                  }
                 >
                   Cancel
                 </button>
@@ -100,10 +115,12 @@ export function Requests() {
               {CANCELLABLE_REQUEST.includes(request.status) && (
                 <button
                   className="lnk"
-                  onClick={async () => {
-                    await cancelServiceRequest(request.id)
-                    await load()
-                  }}
+                  onClick={() =>
+                    void runCancel(
+                      () => cancelServiceRequest(request.id),
+                      'That request can no longer be cancelled.',
+                    )
+                  }
                 >
                   Cancel
                 </button>

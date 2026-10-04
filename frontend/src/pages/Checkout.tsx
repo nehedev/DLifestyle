@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, naira, createOrder, createServiceRequest, payOrder } from '../api'
 import { toE164 } from '../data'
 import { A } from '../router'
@@ -26,6 +26,22 @@ function tomorrow(): string {
   return date.toISOString().slice(0, 10)
 }
 
+/** Today's date as YYYY-MM-DD in an IANA timezone. */
+function todayIn(timezone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
+function addDays(isoDate: string, days: number): string {
+  const date = new Date(isoDate + 'T00:00:00Z')
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
 export function Checkout() {
   const { lines, itemsTotalMinor, clear } = useCart()
   const { store } = useCatalog()
@@ -43,6 +59,16 @@ export function Checkout() {
   const [date, setDate] = useState(tomorrow())
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+
+  const minDate = store ? todayIn(store.timezone) : undefined
+  const maxDate = store ? addDays(todayIn(store.timezone), store.max_advance_days) : undefined
+
+  useEffect(() => {
+    if (!minDate || !maxDate) return
+    setDate((current) =>
+      current < minDate ? minDate : current > maxDate ? maxDate : current,
+    )
+  }, [minDate, maxDate])
 
   const foodLines = lines.filter((l) => l.kind === 'food')
   const serviceLines = lines.filter((l) => l.kind === 'service')
@@ -182,7 +208,14 @@ export function Checkout() {
               )}
               <label className="fld">
                 Fulfillment date
-                <input className="inp" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <input
+                  className="inp"
+                  type="date"
+                  value={date}
+                  min={minDate}
+                  max={maxDate}
+                  onChange={(e) => setDate(e.target.value)}
+                />
               </label>
               <label className="fld">
                 Notes for Dami (optional)
