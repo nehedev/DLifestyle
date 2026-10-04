@@ -21,12 +21,7 @@ from sqlalchemy.ext.asyncio import (
 _TEST_SETTINGS = {
     "DATABASE_URL": "postgresql+asyncpg://ficmart:ficmart@localhost:5432/ficmart",
     "REDIS_URL": "redis://localhost:6379/0",
-    "AUTH0_DOMAIN": "tenant.example.com",
-    "AUTH0_AUDIENCE": "https://api.damis.example.com",
-    "AUTH0_EMAIL_CLAIM": "https://damis.example.com/email",
-    "AUTH0_FIRST_NAME_CLAIM": "https://damis.example.com/first_name",
-    "AUTH0_LAST_NAME_CLAIM": "https://damis.example.com/last_name",
-    "AUTH0_ROLES_CLAIM": "https://damis.example.com/roles",
+    "GOOGLE_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
     "JWKS_CACHE_TTL_SECONDS": "3600",
     "JWKS_TIMEOUT_SECONDS": "5",
     "CURRENCY": "NGN",
@@ -42,6 +37,10 @@ _TEST_SETTINGS = {
     "RESEND_TIMEOUT_SECONDS": "10",
     "EMAIL_FROM_ADDRESS": "Dami's Lifestyle Services <noreply@example.com>",
     "OWNER_NOTIFICATION_EMAIL": "owner@example.com",
+    "CLOUDINARY_CLOUD_NAME": "test-cloud",
+    "CLOUDINARY_API_KEY": "test-key",
+    "CLOUDINARY_API_SECRET": "test-secret",
+    "CLOUDINARY_UPLOAD_FOLDER": "damis-test",
     "PENDING_ORDER_TIMEOUT_MINUTES": "15",
     "EXPIRY_JOB_INTERVAL_MINUTES": "5",
     "CELERY_TASK_MAX_RETRIES": "5",
@@ -228,7 +227,7 @@ async def order_client(
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory.begin() as session:
         user = User(
-            auth0_sub="auth0|orders-test",
+            provider_sub="google|orders-test",
             email="orders-test@example.com",
             first_name="Ada",
             last_name="Obi",
@@ -240,7 +239,7 @@ async def order_client(
 
     detached_user = User(
         id=user_id,
-        auth0_sub="auth0|orders-test",
+        provider_sub="google|orders-test",
         email="orders-test@example.com",
         first_name="Ada",
         last_name="Obi",
@@ -258,7 +257,7 @@ async def order_client(
             yield session
 
     async def override_current_user() -> CurrentUser:
-        return CurrentUser(user=detached_user, roles=frozenset())
+        return CurrentUser(user=detached_user)
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_current_user

@@ -4,11 +4,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_owner_user
+from app.api.dependencies import get_admin_user
 from app.core.config import settings
 from app.core.cursors import InvalidCursor
 from app.db.session import get_session
-from app.models import MenuItem, Service, ServiceRequest, StoreSettings
+from app.models import MenuItem, Service, ServiceRequest, StoreSettings, User
 from app.schemas.admin_orders import (
     AdminOrderListResponse,
     AdminOrderResponse,
@@ -26,7 +26,8 @@ from app.schemas.service_requests import (
 )
 from app.schemas.services import ServiceAdmin, ServiceCreate, ServicePatch
 from app.schemas.store import StorePublic, StoreSettingsPut
-from app.services import admin_orders
+from app.schemas.user import UserAdminResponse, UserRolePatch
+from app.services import admin_orders, admin_users
 from app.services import menu as menu_service
 from app.services import service_requests as service_request_service
 from app.services import services as services_service
@@ -36,7 +37,7 @@ from app.services.service_requests import (
 )
 from app.services.store_settings import get_store_settings, put_store_settings
 
-router = APIRouter(prefix="/admin", dependencies=[Depends(get_owner_user)])
+router = APIRouter(prefix="/sudo", dependencies=[Depends(get_admin_user)])
 
 
 def _admin_request_response(request: ServiceRequest) -> ServiceRequestAdminResponse:
@@ -418,3 +419,46 @@ async def patch_admin_service_request(
             detail="service_request_transition_not_allowed",
         ) from error
     return _admin_request_response(request)
+
+
+def _user_response(user: User) -> UserAdminResponse:
+    return UserAdminResponse(
+        id=user.id,
+        email=user.email,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        role=user.role,
+        created_at=user.created_at,
+    )
+
+
+@router.get("/users", response_model=CursorPage[UserAdminResponse])
+async def get_admin_users(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: str | None = None,
+) -> CursorPage[UserAdminResponse]:
+    try:
+        users, next_cursor = await admin_users.list_users(
+            session, limit=limit, cursor=cursor
+        )
+    except InvalidCursor as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_cursor"
+        ) from error
+    return CursorPage(
+        items=[_user_response(user) for user in users], next_cursor=next_cursor
+    )
+
+
+@router.patch("/users/{user_id}/role", response_model=UserAdminResponse)
+async def patch_admin_user_role(
+    user_id: int,
+    body: UserRolePatch,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> UserAdminResponse:
+    try:
+        user = await admin_users.set_user_role(session, user_id=user_id, role=body.role)
+    except admin_users.UserNotFound as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    return _user_response(user)

@@ -21,7 +21,7 @@ async def _insert_user(
     async with session_factory.begin() as session:
         session.add(
             user := User(
-                auth0_sub=sub,
+                provider_sub=sub,
                 email=email,
                 first_name="Expiry",
                 last_name=None,
@@ -107,7 +107,7 @@ async def test_expiry_cancels_only_old_unpaid_orders(
 ) -> None:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     user_id = await _insert_user(
-        session_factory, sub="auth0|expiry-test", email="expiry-test@example.com"
+        session_factory, sub="google|expiry-test", email="expiry-test@example.com"
     )
     menu_item_id = await _insert_menu_item(session_factory)
 
@@ -165,7 +165,7 @@ async def test_expiry_cancels_only_old_unpaid_orders(
 async def test_concurrent_expiry_runs_cancel_once(test_engine: AsyncEngine) -> None:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     user_id = await _insert_user(
-        session_factory, sub="auth0|expiry-race", email="expiry-race@example.com"
+        session_factory, sub="google|expiry-race", email="expiry-race@example.com"
     )
     menu_item_id = await _insert_menu_item(session_factory)
     order_id = await _create_order(

@@ -10,14 +10,15 @@ def test_settings_load_without_defaults() -> None:
     assert loaded_settings.cors_origins
     assert loaded_settings.currency == "NGN"
     assert loaded_settings.business_timezone == "Africa/Lagos"
-    assert loaded_settings.auth0_roles_claim
+    assert loaded_settings.google_client_id
     assert loaded_settings.owner_notification_email
+    assert loaded_settings.cloudinary_cloud_name
 
 
 def test_currency_and_business_timezone_are_read_from_the_environment() -> None:
     assert settings.currency == "NGN"
     assert settings.business_timezone == "Africa/Lagos"
-    assert settings.auth0_roles_claim
+    assert settings.google_client_id
     assert settings.owner_notification_email
 
 

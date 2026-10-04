@@ -420,7 +420,7 @@ async def test_cancel_is_user_scoped_and_cancels_once(
     app.dependency_overrides[get_current_user] = _fixed_user(
         User(
             id=other_user_id,
-            auth0_sub="auth0|other-orders-test",
+            provider_sub="google|other-orders-test",
             email="other-orders-test@example.com",
             first_name="Other",
             last_name=None,
@@ -454,7 +454,7 @@ async def _insert_other_user(test_engine: AsyncEngine) -> int:
     async with session_factory.begin() as session:
         session.add(
             user := User(
-                auth0_sub="auth0|other-orders-test",
+                provider_sub="google|other-orders-test",
                 email="other-orders-test@example.com",
                 first_name="Other",
                 last_name=None,
@@ -492,7 +492,7 @@ async def _insert_order_for_user(
 
 def _fixed_user(user: User):
     async def override_current_user() -> CurrentUser:
-        return CurrentUser(user=user, roles=frozenset())
+        return CurrentUser(user=user)
 
     return override_current_user
 

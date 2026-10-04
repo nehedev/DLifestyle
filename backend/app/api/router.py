@@ -97,7 +97,7 @@ async def get_me(
         email=current_user.user.email,
         first_name=current_user.user.first_name,
         last_name=current_user.user.last_name,
-        is_owner=current_user.is_owner,
+        role=current_user.user.role,
     )
 
 

@@ -26,7 +26,7 @@ def _now() -> datetime:
 async def _insert_user(connection, *, sub: str, email: str) -> int:
     result = await connection.execute(
         insert(User).values(
-            auth0_sub=sub,
+            provider_sub=sub,
             email=email,
             first_name="Constraint",
             created_at=_now(),
@@ -144,7 +144,7 @@ def test_metadata_has_exactly_the_specified_tables() -> None:
                 "ix_service_requests_status",
             },
         ),
-        ("users", {"uq_users_auth0_sub", "uq_users_email"}),
+        ("users", {"uq_users_provider_sub", "uq_users_email", "ck_users_valid_role"}),
     ],
 )
 def test_named_constraints_and_indexes_exist(
@@ -181,7 +181,7 @@ async def test_check_constraints_reject_invalid_values(
     async with test_engine.connect() as connection:
         async with connection.begin():
             user_id = await _insert_user(
-                connection, sub="auth0|checks", email="checks@example.com"
+                connection, sub="google|checks", email="checks@example.com"
             )
             menu_item_id = await _insert_menu_item(connection)
             order_id = await _insert_order(connection, user_id=user_id)
@@ -307,7 +307,7 @@ async def test_unique_constraints_are_enforced(test_engine: AsyncEngine) -> None
     async with test_engine.connect() as connection:
         async with connection.begin():
             user_id = await _insert_user(
-                connection, sub="auth0|unique", email="unique@example.com"
+                connection, sub="google|unique", email="unique@example.com"
             )
             menu_item_id = await _insert_menu_item(connection)
             await connection.execute(
@@ -353,7 +353,7 @@ async def test_unique_constraints_are_enforced(test_engine: AsyncEngine) -> None
             await assert_rejected(
                 connection,
                 insert(User).values(
-                    auth0_sub="auth0|unique",
+                    provider_sub="google|unique",
                     email="another@example.com",
                     first_name="Duplicate subject",
                     created_at=_now(),
@@ -362,7 +362,7 @@ async def test_unique_constraints_are_enforced(test_engine: AsyncEngine) -> None
             await assert_rejected(
                 connection,
                 insert(User).values(
-                    auth0_sub="auth0|another",
+                    provider_sub="google|another",
                     email="unique@example.com",
                     first_name="Duplicate email",
                     created_at=_now(),
@@ -441,6 +441,23 @@ async def test_unique_constraints_are_enforced(test_engine: AsyncEngine) -> None
             )
 
 
+async def test_user_role_defaults_to_user_and_rejects_unknown_roles(
+    test_engine: AsyncEngine,
+) -> None:
+    async with test_engine.connect() as connection:
+        async with connection.begin():
+            user_id = await _insert_user(
+                connection, sub="google|role", email="role@example.com"
+            )
+            with pytest.raises(IntegrityError):
+                async with connection.begin_nested():
+                    await connection.execute(
+                        update(User).where(User.id == user_id).values(role="superuser")
+                    )
+            role = await connection.scalar(select(User.role).where(User.id == user_id))
+    assert role == "user"
+
+
 async def test_a_menu_item_can_be_served_on_several_days(
     test_engine: AsyncEngine,
 ) -> None:
@@ -487,7 +504,7 @@ async def test_service_request_constraints(test_engine: AsyncEngine) -> None:
     async with test_engine.connect() as connection:
         async with connection.begin():
             user_id = await _insert_user(
-                connection, sub="auth0|requests", email="requests@example.com"
+                connection, sub="google|requests", email="requests@example.com"
             )
             await connection.execute(
                 insert(Service).values(

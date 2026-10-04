@@ -45,7 +45,7 @@ async def _add_user(
     async with session_factory.begin() as session:
         session.add(
             user := User(
-                auth0_sub=sub,
+                provider_sub=sub,
                 email=email,
                 first_name="Person",
                 last_name=None,
@@ -215,13 +215,13 @@ async def world(
         )
 
     owner_id = await _add_user(
-        session_factory, sub="auth0|owner", email="owner@example.com"
+        session_factory, sub="google|owner", email="owner@example.com"
     )
     customer_id = await _add_user(
-        session_factory, sub="auth0|customer", email="customer@example.com"
+        session_factory, sub="google|customer", email="customer@example.com"
     )
     other_customer_id = await _add_user(
-        session_factory, sub="auth0|other", email="other@example.com"
+        session_factory, sub="google|other", email="other@example.com"
     )
     service_id = await _add_service(session_factory, name="Home cleaning")
     enqueued: list[tuple[str, list[int] | None]] = []
@@ -258,17 +258,16 @@ async def world(
 def _as(world: dict[str, Any], user_id: int, *, owner: bool = False) -> None:
     user = User(
         id=user_id,
-        auth0_sub="stub",
+        provider_sub="stub",
         email="stub@example.com",
         first_name="Stub",
         last_name=None,
+        role="admin" if owner else "user",
         created_at=_now(),
     )
 
     async def override_get_current_user() -> CurrentUser:
-        return CurrentUser(
-            user=user, roles=frozenset({"owner"}) if owner else frozenset()
-        )
+        return CurrentUser(user=user)
 
     app.dependency_overrides[get_current_user] = override_get_current_user
 
@@ -310,16 +309,14 @@ async def test_owner_lists_orders_with_filters_and_cursor(
     )
     session_factory = sessions(world)
 
-    everything = await owner(world).get("/api/v1/admin/orders?limit=1")
+    everything = await owner(world).get("/api/v1/sudo/orders?limit=1")
     cursor = everything.json()["next_cursor"]
     second_page = await owner(world).get(
-        "/api/v1/admin/orders?limit=1", params={"cursor": cursor}
+        "/api/v1/sudo/orders?limit=1", params={"cursor": cursor}
     )
-    paid_only = await owner(world).get(
-        "/api/v1/admin/orders", params={"status": "paid"}
-    )
+    paid_only = await owner(world).get("/api/v1/sudo/orders", params={"status": "paid"})
     fulfillment = await owner(world).get(
-        "/api/v1/admin/orders",
+        "/api/v1/sudo/orders",
         params={"fulfillment_date": (business_today() + timedelta(days=1)).isoformat()},
     )
 
@@ -355,7 +352,7 @@ async def test_owner_order_detail_exposes_gateway_references(
         sessions(world), order_id=order_id, status="initiated", reference="ref-b"
     )
 
-    response = await owner(world).get(f"/api/v1/admin/orders/{order_id}")
+    response = await owner(world).get(f"/api/v1/sudo/orders/{order_id}")
 
     assert response.status_code == 200
     body = response.json()
@@ -388,7 +385,7 @@ async def test_owner_order_detail_of_another_users_order_is_visible(
     order_id = await _add_order(
         sessions(world), user_id=world["other_customer_id"], status="paid"
     )
-    response = await owner(world).get(f"/api/v1/admin/orders/{order_id}")
+    response = await owner(world).get(f"/api/v1/sudo/orders/{order_id}")
     assert response.status_code == 200
     assert response.json()["user_id"] == world["other_customer_id"]
 
@@ -396,7 +393,7 @@ async def test_owner_order_detail_of_another_users_order_is_visible(
 async def test_owner_order_detail_of_a_missing_order_is_404(
     world: dict[str, Any],
 ) -> None:
-    response = await owner(world).get("/api/v1/admin/orders/9999")
+    response = await owner(world).get("/api/v1/sudo/orders/9999")
     assert response.status_code == 404
 
 
@@ -419,7 +416,7 @@ async def test_owner_moves_an_order_through_the_forward_path(
     )
 
     response = await owner(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": requested}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": requested}
     )
 
     assert response.status_code == 200
@@ -453,7 +450,7 @@ async def test_owner_rejects_a_transition_outside_the_table(
     )
 
     response = await owner(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": requested}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": requested}
     )
 
     assert response.status_code == 409
@@ -471,7 +468,7 @@ async def test_owner_status_body_rejects_an_unknown_status(
         sessions(world), user_id=world["customer_id"], status="paid"
     )
     response = await owner(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": "shipped"}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": "shipped"}
     )
     assert response.status_code == 422
 
@@ -480,7 +477,7 @@ async def test_owner_status_on_a_missing_order_is_404(
     world: dict[str, Any],
 ) -> None:
     response = await owner(world).post(
-        "/api/v1/admin/orders/9999/status", json={"status": "preparing"}
+        "/api/v1/sudo/orders/9999/status", json={"status": "preparing"}
     )
     assert response.status_code == 404
 
@@ -499,7 +496,7 @@ async def test_owner_cancel_of_a_paid_order_refunds_atomically(
     )
 
     response = await owner(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": "cancelled"}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": "cancelled"}
     )
 
     assert response.status_code == 200
@@ -532,7 +529,7 @@ async def test_owner_cancel_of_a_preparing_order_also_refunds(
     )
 
     response = await owner(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": "cancelled"}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": "cancelled"}
     )
 
     assert response.status_code == 200
@@ -547,7 +544,7 @@ async def test_owner_cancel_without_a_succeeded_payment_is_409(
     )
 
     response = await owner(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": "cancelled"}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": "cancelled"}
     )
 
     assert response.status_code == 409
@@ -572,7 +569,7 @@ async def test_concurrent_owner_cancels_refund_once(
     async def cancel() -> None:
         responses.append(
             await owner(world).post(
-                f"/api/v1/admin/orders/{order_id}/status",
+                f"/api/v1/sudo/orders/{order_id}/status",
                 json={"status": "cancelled"},
             )
         )
@@ -592,12 +589,12 @@ async def test_admin_order_routes_reject_a_non_owner(world: dict[str, Any]) -> N
     order_id = await _add_order(
         sessions(world), user_id=world["customer_id"], status="paid"
     )
-    orders = await customer(world).get("/api/v1/admin/orders")
-    detail = await customer(world).get(f"/api/v1/admin/orders/{order_id}")
+    orders = await customer(world).get("/api/v1/sudo/orders")
+    detail = await customer(world).get(f"/api/v1/sudo/orders/{order_id}")
     transition = await customer(world).post(
-        f"/api/v1/admin/orders/{order_id}/status", json={"status": "preparing"}
+        f"/api/v1/sudo/orders/{order_id}/status", json={"status": "preparing"}
     )
-    payments = await customer(world).get("/api/v1/admin/payments")
+    payments = await customer(world).get("/api/v1/sudo/payments")
 
     assert [orders.status_code, detail.status_code, transition.status_code] == [
         403,
@@ -638,12 +635,12 @@ async def test_admin_payments_filter_by_status_and_paginate(
         created_at=_in_days(2),
     )
 
-    everything = await owner(world).get("/api/v1/admin/payments?limit=2")
+    everything = await owner(world).get("/api/v1/sudo/payments?limit=2")
     review = await owner(world).get(
-        "/api/v1/admin/payments", params={"status": "needs_review"}
+        "/api/v1/sudo/payments", params={"status": "needs_review"}
     )
     refunds = await owner(world).get(
-        "/api/v1/admin/payments", params={"status": "refund_pending"}
+        "/api/v1/sudo/payments", params={"status": "refund_pending"}
     )
 
     assert everything.status_code == 200
@@ -671,7 +668,7 @@ async def test_admin_payments_reject_an_invalid_cursor(
     world: dict[str, Any],
 ) -> None:
     response = await owner(world).get(
-        "/api/v1/admin/payments", params={"cursor": "nope"}
+        "/api/v1/sudo/payments", params={"cursor": "nope"}
     )
     assert response.status_code == 400
 
@@ -976,11 +973,11 @@ async def test_admin_service_requests_filter_and_paginate(
         created_at=_in_days(1),
     )
 
-    everything = await owner(world).get("/api/v1/admin/service-requests")
+    everything = await owner(world).get("/api/v1/sudo/service-requests")
     confirmed = await owner(world).get(
-        "/api/v1/admin/service-requests", params={"status": "confirmed"}
+        "/api/v1/sudo/service-requests", params={"status": "confirmed"}
     )
-    detail = await owner(world).get(f"/api/v1/admin/service-requests/{requested_id}")
+    detail = await owner(world).get(f"/api/v1/sudo/service-requests/{requested_id}")
 
     assert len(everything.json()["items"]) == 2
     assert len(confirmed.json()["items"]) == 1
@@ -991,7 +988,7 @@ async def test_admin_service_requests_filter_and_paginate(
 async def test_admin_service_request_detail_of_a_missing_row_is_404(
     world: dict[str, Any],
 ) -> None:
-    response = await owner(world).get("/api/v1/admin/service-requests/9999")
+    response = await owner(world).get("/api/v1/sudo/service-requests/9999")
     assert response.status_code == 404
 
 
@@ -1020,7 +1017,7 @@ async def test_admin_service_request_transitions(
     )
 
     response = await owner(world).patch(
-        f"/api/v1/admin/service-requests/{request_id}", json={"status": target}
+        f"/api/v1/sudo/service-requests/{request_id}", json={"status": target}
     )
 
     assert response.status_code == 200
@@ -1053,7 +1050,7 @@ async def test_admin_rejects_an_illegal_service_request_transition(
     )
 
     response = await owner(world).patch(
-        f"/api/v1/admin/service-requests/{request_id}", json={"status": target}
+        f"/api/v1/sudo/service-requests/{request_id}", json={"status": target}
     )
 
     assert response.status_code == 409
@@ -1072,7 +1069,7 @@ async def test_admin_sets_a_quote_and_an_owner_note(world: dict[str, Any]) -> No
     )
 
     response = await owner(world).patch(
-        f"/api/v1/admin/service-requests/{request_id}",
+        f"/api/v1/sudo/service-requests/{request_id}",
         json={
             "quoted_amount_minor": 45_000,
             "owner_note": "Quoted by phone",
@@ -1095,11 +1092,11 @@ async def test_admin_patch_rejects_a_negative_quote_and_unknown_status(
     )
 
     negative = await owner(world).patch(
-        f"/api/v1/admin/service-requests/{request_id}",
+        f"/api/v1/sudo/service-requests/{request_id}",
         json={"quoted_amount_minor": -1},
     )
     unknown = await owner(world).patch(
-        f"/api/v1/admin/service-requests/{request_id}", json={"status": "quoted"}
+        f"/api/v1/sudo/service-requests/{request_id}", json={"status": "quoted"}
     )
 
     assert negative.status_code == 422
@@ -1110,7 +1107,7 @@ async def test_admin_patch_of_a_missing_service_request_is_404(
     world: dict[str, Any],
 ) -> None:
     response = await owner(world).patch(
-        "/api/v1/admin/service-requests/9999", json={"status": "contacted"}
+        "/api/v1/sudo/service-requests/9999", json={"status": "contacted"}
     )
     assert response.status_code == 404
 
@@ -1123,10 +1120,10 @@ async def test_admin_service_request_routes_reject_a_non_owner(
         user_id=world["customer_id"],
         service_id=world["service_id"],
     )
-    listing = await customer(world).get("/api/v1/admin/service-requests")
-    detail = await customer(world).get(f"/api/v1/admin/service-requests/{request_id}")
+    listing = await customer(world).get("/api/v1/sudo/service-requests")
+    detail = await customer(world).get(f"/api/v1/sudo/service-requests/{request_id}")
     patched = await customer(world).patch(
-        f"/api/v1/admin/service-requests/{request_id}",
+        f"/api/v1/sudo/service-requests/{request_id}",
         json={"status": "contacted"},
     )
 

@@ -44,7 +44,7 @@ async def _add_user(
     async with session_factory.begin() as session:
         session.add(
             user := User(
-                auth0_sub=sub,
+                provider_sub=sub,
                 email=email,
                 first_name="Person",
                 last_name=None,
@@ -128,15 +128,19 @@ def _session_override(
 
 
 def _owner_override(user: User):
+    user.role = "admin"
+
     async def override_get_current_user() -> CurrentUser:
-        return CurrentUser(user=user, roles=frozenset({"owner"}))
+        return CurrentUser(user=user)
 
     return override_get_current_user
 
 
 def _customer_override(user: User):
+    user.role = "user"
+
     async def override_get_current_user() -> CurrentUser:
-        return CurrentUser(user=user, roles=frozenset())
+        return CurrentUser(user=user)
 
     return override_get_current_user
 
@@ -153,11 +157,11 @@ async def owner_client(
     admin_session: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[AsyncClient]:
     user_id = await _add_user(
-        admin_session, sub="auth0|admin-test", email="owner@example.com"
+        admin_session, sub="google|admin-test", email="owner@example.com"
     )
     owner = User(
         id=user_id,
-        auth0_sub="auth0|admin-test",
+        provider_sub="google|admin-test",
         email="owner@example.com",
         first_name="Owner",
         last_name=None,
@@ -178,11 +182,11 @@ async def customer_client(
     admin_session: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[AsyncClient]:
     user_id = await _add_user(
-        admin_session, sub="auth0|customer-test", email="customer@example.com"
+        admin_session, sub="google|customer-test", email="customer@example.com"
     )
     customer = User(
         id=user_id,
-        auth0_sub="auth0|customer-test",
+        provider_sub="google|customer-test",
         email="customer@example.com",
         first_name="Customer",
         last_name=None,
@@ -212,14 +216,14 @@ async def anonymous_client(
 
 
 ADMIN_PATHS = (
-    ("GET", "/api/v1/admin/menu-items"),
-    ("POST", "/api/v1/admin/menu-items"),
-    ("PATCH", "/api/v1/admin/menu-items/1"),
-    ("GET", "/api/v1/admin/services"),
-    ("POST", "/api/v1/admin/services"),
-    ("PATCH", "/api/v1/admin/services/1"),
-    ("GET", "/api/v1/admin/store-settings"),
-    ("PUT", "/api/v1/admin/store-settings"),
+    ("GET", "/api/v1/sudo/menu-items"),
+    ("POST", "/api/v1/sudo/menu-items"),
+    ("PATCH", "/api/v1/sudo/menu-items/1"),
+    ("GET", "/api/v1/sudo/services"),
+    ("POST", "/api/v1/sudo/services"),
+    ("PATCH", "/api/v1/sudo/services/1"),
+    ("GET", "/api/v1/sudo/store-settings"),
+    ("PUT", "/api/v1/sudo/store-settings"),
 )
 
 
@@ -242,7 +246,7 @@ async def test_admin_endpoints_with_a_non_owner_are_403(
 ) -> None:
     response = await customer_client.request(method, path, json={})
     assert response.status_code == 403
-    assert response.json() == {"detail": "owner_required"}
+    assert response.json() == {"detail": "admin_required"}
 
 
 async def test_admin_menu_items_list_includes_inactive_and_paginates(
@@ -253,10 +257,10 @@ async def test_admin_menu_items_list_includes_inactive_and_paginates(
     second_id = await _add_menu_item(admin_session, name="Hidden dish", is_active=False)
     third_id = await _add_menu_item(admin_session, name="Third dish")
 
-    page_one = await owner_client.get("/api/v1/admin/menu-items?limit=2")
+    page_one = await owner_client.get("/api/v1/sudo/menu-items?limit=2")
     cursor = page_one.json()["next_cursor"]
     page_two = await owner_client.get(
-        "/api/v1/admin/menu-items?limit=2", params={"cursor": cursor}
+        "/api/v1/sudo/menu-items?limit=2", params={"cursor": cursor}
     )
     ids = [item["id"] for item in page_one.json()["items"]]
     ids += [item["id"] for item in page_two.json()["items"]]
@@ -286,7 +290,7 @@ async def test_admin_menu_item_list_rejects_an_invalid_cursor(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.get(
-        "/api/v1/admin/menu-items", params={"cursor": "not-a-cursor"}
+        "/api/v1/sudo/menu-items", params={"cursor": "not-a-cursor"}
     )
     assert response.status_code == 400
     assert response.json() == {"detail": "invalid_cursor"}
@@ -297,7 +301,7 @@ async def test_admin_creates_a_menu_item(
     admin_session: async_sessionmaker[AsyncSession],
 ) -> None:
     response = await owner_client.post(
-        "/api/v1/admin/menu-items",
+        "/api/v1/sudo/menu-items",
         json={
             "name": "  New dish  ",
             "description": "Tasty",
@@ -344,7 +348,7 @@ async def test_admin_rejects_an_invalid_menu_item(
     owner_client: AsyncClient,
     body: dict[str, object],
 ) -> None:
-    response = await owner_client.post("/api/v1/admin/menu-items", json=body)
+    response = await owner_client.post("/api/v1/sudo/menu-items", json=body)
     assert response.status_code == 422
 
 
@@ -352,7 +356,7 @@ async def test_admin_creates_a_zero_price_menu_item(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.post(
-        "/api/v1/admin/menu-items",
+        "/api/v1/sudo/menu-items",
         json={
             "name": "Zero price",
             "category": "Rice",
@@ -373,7 +377,7 @@ async def test_admin_patches_a_menu_item_and_its_weekdays(
     )
 
     response = await owner_client.patch(
-        f"/api/v1/admin/menu-items/{menu_item_id}",
+        f"/api/v1/sudo/menu-items/{menu_item_id}",
         json={
             "name": "New name",
             "category": "Soups",
@@ -410,7 +414,7 @@ async def test_admin_patch_leaves_omitted_fields_alone(
     )
 
     response = await owner_client.patch(
-        f"/api/v1/admin/menu-items/{menu_item_id}", json={"price_minor": 1}
+        f"/api/v1/sudo/menu-items/{menu_item_id}", json={"price_minor": 1}
     )
 
     assert response.status_code == 200
@@ -426,7 +430,7 @@ async def test_admin_patch_of_a_missing_menu_item_is_404(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.patch(
-        "/api/v1/admin/menu-items/9999", json={"price_minor": 1}
+        "/api/v1/sudo/menu-items/9999", json={"price_minor": 1}
     )
     assert response.status_code == 404
 
@@ -436,7 +440,7 @@ async def test_a_price_edit_leaves_existing_orders_unchanged(
     admin_session: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id = await _add_user(
-        admin_session, sub="auth0|order-owner", email="order-owner@example.com"
+        admin_session, sub="google|order-owner", email="order-owner@example.com"
     )
     menu_item_id = await _add_menu_item(
         admin_session, name="Priced dish", price_minor=100_000, weekdays=(1,)
@@ -474,7 +478,7 @@ async def test_a_price_edit_leaves_existing_orders_unchanged(
         order_id = order.id
 
     patched = await owner_client.patch(
-        f"/api/v1/admin/menu-items/{menu_item_id}",
+        f"/api/v1/sudo/menu-items/{menu_item_id}",
         json={"name": "Repriced dish", "price_minor": 900_000},
     )
 
@@ -500,9 +504,9 @@ async def test_admin_services_list_and_create(
     await _add_service(admin_session, name="Home cleaning", sort_order=2)
     await _add_service(admin_session, name="Retired", sort_order=1, is_active=False)
 
-    listing = await owner_client.get("/api/v1/admin/services")
+    listing = await owner_client.get("/api/v1/sudo/services")
     created = await owner_client.post(
-        "/api/v1/admin/services",
+        "/api/v1/sudo/services",
         json={"name": "Errand running", "description": "Anything"},
     )
 
@@ -531,7 +535,7 @@ async def test_admin_creates_a_service_with_an_explicit_sort_order(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.post(
-        "/api/v1/admin/services",
+        "/api/v1/sudo/services",
         json={"name": "Home organization", "description": "Tidy up", "sort_order": 0},
     )
     assert response.status_code == 200
@@ -542,7 +546,7 @@ async def test_admin_services_list_rejects_an_invalid_cursor(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.get(
-        "/api/v1/admin/services", params={"cursor": "not-a-cursor"}
+        "/api/v1/sudo/services", params={"cursor": "not-a-cursor"}
     )
     assert response.status_code == 400
     assert response.json() == {"detail": "invalid_cursor"}
@@ -555,7 +559,7 @@ async def test_admin_patches_a_service(
     service_id = await _add_service(admin_session, name="Old", sort_order=5)
 
     response = await owner_client.patch(
-        f"/api/v1/admin/services/{service_id}",
+        f"/api/v1/sudo/services/{service_id}",
         json={"name": "New", "is_active": False, "sort_order": 1},
     )
 
@@ -570,7 +574,7 @@ async def test_admin_patch_of_a_missing_service_is_404(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.patch(
-        "/api/v1/admin/services/9999", json={"name": "New"}
+        "/api/v1/sudo/services/9999", json={"name": "New"}
     )
     assert response.status_code == 404
 
@@ -587,7 +591,7 @@ async def test_admin_rejects_an_invalid_service(
     owner_client: AsyncClient,
     body: dict[str, object],
 ) -> None:
-    response = await owner_client.post("/api/v1/admin/services", json=body)
+    response = await owner_client.post("/api/v1/sudo/services", json=body)
     assert response.status_code == 422
 
 
@@ -595,12 +599,12 @@ async def test_admin_store_settings_are_503_then_created_then_replaced(
     owner_client: AsyncClient,
     admin_session: async_sessionmaker[AsyncSession],
 ) -> None:
-    missing = await owner_client.get("/api/v1/admin/store-settings")
+    missing = await owner_client.get("/api/v1/sudo/store-settings")
     assert missing.status_code == 503
     assert missing.json() == {"detail": "store_not_configured"}
 
     created = await owner_client.put(
-        "/api/v1/admin/store-settings",
+        "/api/v1/sudo/store-settings",
         json={
             "delivery_fee_minor": 150_000,
             "order_cutoff_time": "16:30",
@@ -617,7 +621,7 @@ async def test_admin_store_settings_are_503_then_created_then_replaced(
     }
 
     replaced = await owner_client.put(
-        "/api/v1/admin/store-settings",
+        "/api/v1/sudo/store-settings",
         json={
             "delivery_fee_minor": 200_000,
             "order_cutoff_time": "18:00",
@@ -629,7 +633,7 @@ async def test_admin_store_settings_are_503_then_created_then_replaced(
     assert replaced.json()["order_cutoff_time"] == "18:00"
     assert replaced.json()["max_advance_days"] == 3
 
-    fetched = await owner_client.get("/api/v1/admin/store-settings")
+    fetched = await owner_client.get("/api/v1/sudo/store-settings")
     assert fetched.json() == replaced.json()
     async with admin_session() as session:
         rows = list(await session.scalars(select(StoreSettings)))
@@ -669,7 +673,7 @@ async def test_admin_rejects_invalid_store_settings(
     owner_client: AsyncClient,
     body: dict[str, object],
 ) -> None:
-    response = await owner_client.put("/api/v1/admin/store-settings", json=body)
+    response = await owner_client.put("/api/v1/sudo/store-settings", json=body)
     assert response.status_code == 422
 
 
@@ -691,9 +695,9 @@ async def test_no_delete_endpoint_exists_for_the_catalog(
         )
 
     responses = [
-        await owner_client.delete(f"/api/v1/admin/menu-items/{menu_item_id}"),
-        await owner_client.delete(f"/api/v1/admin/services/{service_id}"),
-        await owner_client.delete("/api/v1/admin/store-settings"),
+        await owner_client.delete(f"/api/v1/sudo/menu-items/{menu_item_id}"),
+        await owner_client.delete(f"/api/v1/sudo/services/{service_id}"),
+        await owner_client.delete("/api/v1/sudo/store-settings"),
     ]
 
     assert [response.status_code for response in responses] == [405, 405, 405]
@@ -707,7 +711,7 @@ async def test_store_settings_put_ignores_unknown_fields(
     owner_client: AsyncClient,
 ) -> None:
     response = await owner_client.put(
-        "/api/v1/admin/store-settings",
+        "/api/v1/sudo/store-settings",
         json={
             "delivery_fee_minor": 1_000,
             "order_cutoff_time": "16:30",
@@ -728,7 +732,7 @@ async def test_deactivating_hides_a_menu_item_from_the_public_menu(
 
     before = await owner_client.get("/api/v1/menu")
     patched = await owner_client.patch(
-        f"/api/v1/admin/menu-items/{menu_item_id}", json={"is_active": False}
+        f"/api/v1/sudo/menu-items/{menu_item_id}", json={"is_active": False}
     )
     after = await owner_client.get("/api/v1/menu")
 
@@ -744,7 +748,7 @@ async def test_deactivating_a_service_hides_it_from_the_public_services(
     service_id = await _add_service(admin_session, name="Temporary")
     before = await owner_client.get("/api/v1/services")
     await owner_client.patch(
-        f"/api/v1/admin/services/{service_id}", json={"is_active": False}
+        f"/api/v1/sudo/services/{service_id}", json={"is_active": False}
     )
     after = await owner_client.get("/api/v1/services")
 
@@ -757,7 +761,7 @@ async def test_store_settings_put_is_visible_on_the_public_store(
 ) -> None:
     public_before = await owner_client.get("/api/v1/store")
     await owner_client.put(
-        "/api/v1/admin/store-settings",
+        "/api/v1/sudo/store-settings",
         json={
             "delivery_fee_minor": 75_000,
             "order_cutoff_time": "20:15",

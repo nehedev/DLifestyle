@@ -13,20 +13,21 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.api.dependencies import CurrentUser, get_owner_user
-from app.core import auth0
-from app.core.auth0 import Auth0TokenVerifier
+from app.api.dependencies import CurrentUser, get_admin_user
+from app.core import google
 from app.core.config import settings
+from app.core.google import GoogleTokenVerifier
 from app.db.session import get_session
 from app.main import app
 from app.models import User
 from app.services import users as users_service
 from app.workers.celery_app import celery_app
 
-_KEY_ID = "damis-auth-test-key"
+_KEY_ID = "google-auth-test-key"
+_ISSUER = "https://accounts.google.com"
 
 
 def _base64url_integer(value: int) -> str:
@@ -52,15 +53,14 @@ class AuthTestClient:
     ) -> str:
         now = datetime.now(UTC)
         claims: dict[str, Any] = {
-            "iss": f"https://{settings.auth0_domain.rstrip('/')}/",
-            "aud": settings.auth0_audience,
-            "sub": "auth0|alice",
+            "iss": _ISSUER,
+            "aud": settings.google_client_id,
+            "sub": "google|alice",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=5)).timestamp()),
-            settings.auth0_email_claim: "alice@example.com",
-            settings.auth0_first_name_claim: "Alice",
-            settings.auth0_last_name_claim: "Lovelace",
-            settings.auth0_roles_claim: [],
+            "email": "alice@example.com",
+            "given_name": "Alice",
+            "family_name": "Lovelace",
         }
         if overrides is not None:
             claims.update(overrides)
@@ -115,14 +115,13 @@ async def auth_client(
         jwks_requests.append(request)
         return httpx.Response(jwks_status[0], json=jwks_document)
 
-    verifier = Auth0TokenVerifier(
-        domain=settings.auth0_domain,
-        audience=settings.auth0_audience,
+    verifier = GoogleTokenVerifier(
+        client_id=settings.google_client_id,
         cache_ttl_seconds=settings.jwks_cache_ttl_seconds,
         timeout_seconds=settings.jwks_timeout_seconds,
         transport=httpx.MockTransport(handle_jwks),
     )
-    monkeypatch.setattr(auth0, "token_verifier", verifier)
+    monkeypatch.setattr(google, "token_verifier", verifier)
 
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
@@ -157,20 +156,30 @@ async def _user_count(test_engine: AsyncEngine) -> int:
 async def _insert_user(
     test_engine: AsyncEngine,
     *,
-    auth0_sub: str,
+    provider_sub: str,
     email: str,
     first_name: str,
+    role: str = "user",
 ) -> None:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory.begin() as session:
         session.add(
             User(
-                auth0_sub=auth0_sub,
+                provider_sub=provider_sub,
                 email=email,
                 first_name=first_name,
                 last_name=None,
+                role=role,
                 created_at=datetime.now(UTC),
             )
+        )
+
+
+async def _set_role(test_engine: AsyncEngine, *, provider_sub: str, role: str) -> None:
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory.begin() as session:
+        await session.execute(
+            update(User).where(User.provider_sub == provider_sub).values(role=role)
         )
 
 
@@ -189,9 +198,9 @@ async def test_me_provisions_and_syncs_user(
         "email",
         "first_name",
         "last_name",
-        "is_owner",
+        "role",
     }
-    assert first_profile["is_owner"] is False
+    assert first_profile["role"] == "user"
     assert first_profile["email"] == "alice@example.com"
     assert first_profile["first_name"] == "Alice"
     assert first_profile["last_name"] == "Lovelace"
@@ -199,9 +208,9 @@ async def test_me_provisions_and_syncs_user(
     assert auth_client.enqueued_tasks == [("send_welcome_email", [first_profile["id"]])]
 
     changed_claims = {
-        settings.auth0_email_claim: "updated@example.com",
-        settings.auth0_first_name_claim: "Ada",
-        settings.auth0_last_name_claim: "Byron",
+        "email": "updated@example.com",
+        "given_name": "Ada",
+        "family_name": "Byron",
     }
     second_response = await auth_client.client.get(
         "/api/v1/me",
@@ -213,16 +222,13 @@ async def test_me_provisions_and_syncs_user(
         "email": "updated@example.com",
         "first_name": "Ada",
         "last_name": "Byron",
-        "is_owner": False,
+        "role": "user",
     }
     assert len(auth_client.jwks_requests) == 1
     assert len(auth_client.enqueued_tasks) == 1
 
 
-@pytest.mark.parametrize(
-    "missing_claim",
-    [settings.auth0_email_claim, settings.auth0_first_name_claim],
-)
+@pytest.mark.parametrize("missing_claim", ["email", "given_name"])
 async def test_required_profile_claims_are_rejected(
     auth_client: AuthTestClient,
     test_engine: AsyncEngine,
@@ -246,8 +252,8 @@ async def test_missing_or_empty_last_name_is_stored_as_null(
     test_engine: AsyncEngine,
     last_name: str | None,
 ) -> None:
-    overrides = {} if last_name is None else {settings.auth0_last_name_claim: last_name}
-    remove_claims = (settings.auth0_last_name_claim,) if last_name is None else ()
+    overrides = {} if last_name is None else {"family_name": last_name}
+    remove_claims = ("family_name",) if last_name is None else ()
     response = await auth_client.client.get(
         "/api/v1/me",
         headers={
@@ -340,7 +346,7 @@ async def test_email_conflict_on_first_provisioning_writes_nothing(
 ) -> None:
     await _insert_user(
         test_engine,
-        auth0_sub="auth0|original",
+        provider_sub="google|original",
         email="alice@example.com",
         first_name="Original",
     )
@@ -359,19 +365,17 @@ async def test_email_conflict_during_sync_writes_nothing(
 ) -> None:
     await _insert_user(
         test_engine,
-        auth0_sub="auth0|alice",
+        provider_sub="google|alice",
         email="alice@example.com",
         first_name="Alice",
     )
     await _insert_user(
         test_engine,
-        auth0_sub="auth0|other",
+        provider_sub="google|other",
         email="other@example.com",
         first_name="Other",
     )
-    conflicting_token = auth_client.token(
-        {settings.auth0_email_claim: "other@example.com"}
-    )
+    conflicting_token = auth_client.token({"email": "other@example.com"})
     response = await auth_client.client.get(
         "/api/v1/me",
         headers={"Authorization": f"Bearer {conflicting_token}"},
@@ -382,7 +386,7 @@ async def test_email_conflict_during_sync_writes_nothing(
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory() as session:
         alice = await session.scalar(
-            select(User).where(User.auth0_sub == "auth0|alice")
+            select(User).where(User.provider_sub == "google|alice")
         )
     assert alice is not None
     assert alice.email == "alice@example.com"
@@ -422,31 +426,25 @@ async def test_the_email_conflict_is_decided_after_the_insert_is_attempted(
     test_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The insert must be attempted before the email conflict is decided.
-
-    Checking email availability first is a race. A concurrent request can
-    commit its own newly created row between that check and the insert, so
-    the loser of the insert race would then report a conflict against the
-    very row it was racing to create, and the pair would answer 200 and 409
-    instead of 200 and 200.
-    """
+    """The insert must be attempted before the email conflict is decided."""
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory.begin() as session:
         session.add(
             User(
-                auth0_sub="auth0|existing",
+                provider_sub="google|existing",
                 email="shared@example.com",
                 first_name="Existing",
                 last_name=None,
+                role="user",
                 created_at=datetime.now(UTC),
             )
         )
 
     claims = {
-        "sub": "auth0|newcomer",
-        settings.auth0_email_claim: "shared@example.com",
-        settings.auth0_first_name_claim: "New",
-        settings.auth0_last_name_claim: "Comer",
+        "sub": "google|newcomer",
+        "email": "shared@example.com",
+        "given_name": "New",
+        "family_name": "Comer",
     }
     order: list[str] = []
     original_check = users_service._ensure_email_available
@@ -475,60 +473,30 @@ async def test_the_email_conflict_is_decided_after_the_insert_is_attempted(
     assert order == ["insert", "check"]
 
 
-@pytest.mark.parametrize(
-    ("roles_claim", "expected_is_owner"),
-    [
-        (["owner"], True),
-        (["customer", "owner"], True),
-        (["customer"], False),
-        ([], False),
-    ],
-)
-async def test_roles_claim_decides_is_owner(
+async def test_role_comes_from_the_database_not_the_token(
     auth_client: AuthTestClient,
-    roles_claim: list[str] | None,
-    expected_is_owner: bool,
+    test_engine: AsyncEngine,
 ) -> None:
-    overrides = {} if roles_claim is None else {settings.auth0_roles_claim: roles_claim}
-    remove_claims = () if roles_claim is not None else (settings.auth0_roles_claim,)
+    """A token cannot elevate a user; only the stored role grants admin."""
     response = await auth_client.client.get(
         "/api/v1/me",
-        headers={
-            "Authorization": f"Bearer "
-            f"{auth_client.token(overrides, remove_claims=remove_claims)}"
-        },
+        headers={"Authorization": f"Bearer {auth_client.token({'role': 'admin'})}"},
     )
     assert response.status_code == 200
-    assert response.json()["is_owner"] is expected_is_owner
+    assert response.json()["role"] == "user"
 
-
-@pytest.mark.parametrize(
-    "roles_claim",
-    ["owner", None, 42, {"name": "owner"}],
-)
-async def test_a_malformed_roles_claim_grants_no_roles(
-    auth_client: AuthTestClient,
-    roles_claim: Any,
-) -> None:
-    response = await auth_client.client.get(
+    await _set_role(test_engine, provider_sub="google|alice", role="admin")
+    promoted = await auth_client.client.get(
         "/api/v1/me",
-        headers={
-            "Authorization": f"Bearer "
-            f"{auth_client.token({settings.auth0_roles_claim: roles_claim})}"
-        },
+        headers={"Authorization": f"Bearer {auth_client.token()}"},
     )
-    assert response.status_code == 200
-    assert response.json()["is_owner"] is False
+    assert promoted.status_code == 200
+    assert promoted.json()["role"] == "admin"
 
 
 @pytest.fixture
-def owner_probe_app(test_engine: AsyncEngine) -> Iterator[FastAPI]:
-    """A throwaway app whose single route stands in for an admin endpoint.
-
-    Admin routes arrive in a later milestone. This proves the OwnerUser
-    dependency itself: no token is 401, a valid token without the owner
-    role is 403, and only the owner role passes.
-    """
+def admin_probe_app(test_engine: AsyncEngine) -> Iterator[FastAPI]:
+    """A throwaway app whose single route stands in for an admin endpoint."""
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
     async def override_get_session() -> AsyncIterator[AsyncSession]:
@@ -539,9 +507,9 @@ def owner_probe_app(test_engine: AsyncEngine) -> Iterator[FastAPI]:
 
     @probe.get("/probe", response_model=dict[str, bool])
     async def read_probe(
-        current_user: Annotated[CurrentUser, Depends(get_owner_user)],
+        current_user: Annotated[CurrentUser, Depends(get_admin_user)],
     ) -> dict[str, bool]:
-        return {"is_owner": current_user.is_owner}
+        return {"is_admin": current_user.is_admin}
 
     probe.dependency_overrides[get_session] = override_get_session
     yield probe
@@ -549,11 +517,11 @@ def owner_probe_app(test_engine: AsyncEngine) -> Iterator[FastAPI]:
 
 
 async def _probe(
-    owner_probe_app: FastAPI,
+    admin_probe_app: FastAPI,
     token: str | None,
 ) -> httpx.Response:
     async with AsyncClient(
-        transport=ASGITransport(app=owner_probe_app),
+        transport=ASGITransport(app=admin_probe_app),
         base_url="http://testserver",
     ) as client:
         return await client.get(
@@ -562,39 +530,38 @@ async def _probe(
         )
 
 
-async def test_owner_route_without_a_token_is_401(
-    owner_probe_app: FastAPI,
+async def test_admin_route_without_a_token_is_401(
+    admin_probe_app: FastAPI,
 ) -> None:
-    response = await _probe(owner_probe_app, None)
+    response = await _probe(admin_probe_app, None)
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid_token"}
 
 
-async def test_owner_route_with_a_valid_token_without_the_role_is_403(
-    owner_probe_app: FastAPI,
+async def test_admin_route_with_a_valid_token_without_the_role_is_403(
+    admin_probe_app: FastAPI,
     auth_client: AuthTestClient,
 ) -> None:
-    response = await _probe(owner_probe_app, auth_client.token())
+    response = await _probe(admin_probe_app, auth_client.token())
     assert response.status_code == 403
-    assert response.json() == {"detail": "owner_required"}
+    assert response.json() == {"detail": "admin_required"}
 
 
-async def test_owner_route_with_an_invalid_token_is_401_not_403(
-    owner_probe_app: FastAPI,
+async def test_admin_route_with_an_invalid_token_is_401_not_403(
+    admin_probe_app: FastAPI,
     auth_client: AuthTestClient,
 ) -> None:
-    response = await _probe(owner_probe_app, "not-a-jwt")
+    response = await _probe(admin_probe_app, "not-a-jwt")
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid_token"}
 
 
-async def test_owner_route_with_the_owner_role_passes(
-    owner_probe_app: FastAPI,
+async def test_admin_route_with_the_db_admin_role_passes(
+    admin_probe_app: FastAPI,
     auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
 ) -> None:
-    response = await _probe(
-        owner_probe_app,
-        auth_client.token({settings.auth0_roles_claim: ["owner"]}),
-    )
+    await _set_role(test_engine, provider_sub="google|alice", role="admin")
+    response = await _probe(admin_probe_app, auth_client.token())
     assert response.status_code == 200
-    assert response.json() == {"is_owner": True}
+    assert response.json() == {"is_admin": True}

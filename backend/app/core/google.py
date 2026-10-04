@@ -9,6 +9,9 @@ from jwt import PyJWK
 
 from app.core.config import settings
 
+_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+_ALLOWED_ISSUERS = frozenset({"https://accounts.google.com", "accounts.google.com"})
+
 
 class InvalidAccessToken(Exception):
     pass
@@ -18,19 +21,16 @@ class AuthProviderUnavailable(Exception):
     pass
 
 
-class Auth0TokenVerifier:
+class GoogleTokenVerifier:
     def __init__(
         self,
         *,
-        domain: str,
-        audience: str,
+        client_id: str,
         cache_ttl_seconds: int,
         timeout_seconds: int,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._issuer = f"https://{domain.rstrip('/')}/"
-        self._jwks_url = f"{self._issuer}.well-known/jwks.json"
-        self._audience = audience
+        self._client_id = client_id
         self._cache_ttl_seconds = cache_ttl_seconds
         self._timeout_seconds = timeout_seconds
         self._transport = transport
@@ -54,12 +54,13 @@ class Auth0TokenVerifier:
                 token,
                 public_key,
                 algorithms=["RS256"],
-                audience=self._audience,
-                issuer=self._issuer,
-                options={"require": ["exp", "iss", "aud", "sub"]},
+                audience=self._client_id,
+                options={"require": ["exp", "aud", "sub", "iss"]},
             )
         except jwt.PyJWTError as error:
             raise InvalidAccessToken from error
+        if claims.get("iss") not in _ALLOWED_ISSUERS:
+            raise InvalidAccessToken
         return claims
 
     async def _get_public_key(self, key_id: str) -> Any:
@@ -80,7 +81,7 @@ class Auth0TokenVerifier:
                 transport=self._transport,
                 timeout=self._timeout_seconds,
             ) as client:
-                response = await client.get(self._jwks_url)
+                response = await client.get(_JWKS_URL)
                 response.raise_for_status()
             document = response.json()
             raw_keys = document["keys"]
@@ -105,9 +106,8 @@ class Auth0TokenVerifier:
         self._expires_at = monotonic() + self._cache_ttl_seconds
 
 
-token_verifier = Auth0TokenVerifier(
-    domain=settings.auth0_domain,
-    audience=settings.auth0_audience,
+token_verifier = GoogleTokenVerifier(
+    client_id=settings.google_client_id,
     cache_ttl_seconds=settings.jwks_cache_ttl_seconds,
     timeout_seconds=settings.jwks_timeout_seconds,
 )

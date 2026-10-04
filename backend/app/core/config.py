@@ -9,12 +9,7 @@ class Settings(BaseSettings):
 
     database_url: str
     redis_url: str
-    auth0_domain: str
-    auth0_audience: str
-    auth0_email_claim: str
-    auth0_first_name_claim: str
-    auth0_last_name_claim: str
-    auth0_roles_claim: str
+    google_client_id: str
     jwks_cache_ttl_seconds: int
     jwks_timeout_seconds: int
     currency: str
@@ -30,6 +25,10 @@ class Settings(BaseSettings):
     resend_timeout_seconds: int
     email_from_address: str
     owner_notification_email: str
+    cloudinary_cloud_name: str
+    cloudinary_api_key: str
+    cloudinary_api_secret: SecretStr
+    cloudinary_upload_folder: str
     pending_order_timeout_minutes: int
     expiry_job_interval_minutes: int
     celery_task_max_retries: int

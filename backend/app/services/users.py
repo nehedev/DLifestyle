@@ -8,7 +8,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models import User
 from app.workers.celery_app import celery_app
 
@@ -31,10 +30,10 @@ def _required_claim(claims: Mapping[str, Any], claim_name: str) -> str:
 
 
 def _user_values(claims: Mapping[str, Any]) -> dict[str, str | None]:
-    auth0_sub = _required_claim(claims, "sub")
-    email = _required_claim(claims, settings.auth0_email_claim)
-    first_name = _required_claim(claims, settings.auth0_first_name_claim)
-    raw_last_name = claims.get(settings.auth0_last_name_claim)
+    provider_sub = _required_claim(claims, "sub")
+    email = _required_claim(claims, "email")
+    first_name = _required_claim(claims, "given_name")
+    raw_last_name = claims.get("family_name")
     if raw_last_name is None or raw_last_name == "":
         last_name = None
     elif isinstance(raw_last_name, str):
@@ -43,7 +42,7 @@ def _user_values(claims: Mapping[str, Any]) -> dict[str, str | None]:
         raise InvalidUserClaims
 
     return {
-        "auth0_sub": auth0_sub,
+        "provider_sub": provider_sub,
         "email": email,
         "first_name": first_name,
         "last_name": last_name,
@@ -75,13 +74,13 @@ async def _sync_existing_user(
     changed = any(
         getattr(user, field) != value
         for field, value in values.items()
-        if field != "auth0_sub"
+        if field != "provider_sub"
     )
     if not changed:
         return user
 
     for field, value in values.items():
-        if field != "auth0_sub":
+        if field != "provider_sub":
             setattr(user, field, value)
     try:
         await session.commit()
@@ -100,12 +99,12 @@ async def resolve_current_user(
     claims: Mapping[str, Any],
 ) -> User:
     values = _user_values(claims)
-    auth0_sub = values["auth0_sub"]
+    provider_sub = values["provider_sub"]
     email = values["email"]
-    assert isinstance(auth0_sub, str)
+    assert isinstance(provider_sub, str)
     assert isinstance(email, str)
 
-    user = await session.scalar(select(User).where(User.auth0_sub == auth0_sub))
+    user = await session.scalar(select(User).where(User.provider_sub == provider_sub))
     if user is not None:
         return await _sync_existing_user(session, user, values)
 
@@ -136,8 +135,8 @@ async def resolve_current_user(
     # between the check and this insert, and the loser would then report an
     # email conflict against the very row it was racing to create.
     await session.rollback()
-    user = await session.scalar(select(User).where(User.auth0_sub == auth0_sub))
+    user = await session.scalar(select(User).where(User.provider_sub == provider_sub))
     if user is not None:
         return await _sync_existing_user(session, user, values)
     await _ensure_email_available(session, email)
-    raise RuntimeError("Auth0 subject conflict did not resolve to a user")
+    raise RuntimeError("Provider subject conflict did not resolve to a user")

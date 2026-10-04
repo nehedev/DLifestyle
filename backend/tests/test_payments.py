@@ -181,7 +181,7 @@ async def payment_client(
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with session_factory.begin() as session:
         user = User(
-            auth0_sub="auth0|payment-tests",
+            provider_sub="google|payment-tests",
             email="orders-test@example.com",
             first_name="Ada",
             last_name="Obi",
@@ -202,7 +202,7 @@ async def payment_client(
 
     detached_user = User(
         id=user_id,
-        auth0_sub="auth0|payment-tests",
+        provider_sub="google|payment-tests",
         email="orders-test@example.com",
         first_name="Ada",
         last_name="Obi",
@@ -221,7 +221,7 @@ async def payment_client(
             yield session
 
     async def override_current_user() -> CurrentUser:
-        return CurrentUser(user=detached_user, roles=frozenset())
+        return CurrentUser(user=detached_user)
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_current_user] = override_current_user

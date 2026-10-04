@@ -61,7 +61,7 @@ async def _email_entities(
     now = _now()
     async with session_factory.begin() as session:
         user = User(
-            auth0_sub="auth0|email-test",
+            provider_sub="google|email-test",
             email="customer@example.com",
             first_name="Ada",
             last_name="Lovelace",
