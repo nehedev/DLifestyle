@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.db.base import Base
 from app.models import (
+    CartItem,
     MenuItem,
     MenuItemDay,
     Order,
@@ -83,6 +84,7 @@ def test_metadata_has_exactly_the_specified_tables() -> None:
         "order_items",
         "payments",
         "service_requests",
+        "cart_items",
     }
 
 
@@ -145,6 +147,16 @@ def test_metadata_has_exactly_the_specified_tables() -> None:
             },
         ),
         ("users", {"uq_users_provider_sub", "uq_users_email", "ck_users_valid_role"}),
+        (
+            "cart_items",
+            {
+                "ck_cart_items_valid_kind",
+                "ck_cart_items_quantity_positive",
+                "ck_cart_items_target_matches_kind",
+                "ix_cart_items_user_id",
+                "uq_cart_items_food",
+            },
+        ),
     ],
 )
 def test_named_constraints_and_indexes_exist(
@@ -554,3 +566,70 @@ async def test_service_request_constraints(test_engine: AsyncEngine) -> None:
                 .returning(ServiceRequest.quoted_amount_minor)
             )
     assert quoted.scalar_one() == 45000
+
+
+async def test_cart_item_constraints(test_engine: AsyncEngine) -> None:
+    async with test_engine.connect() as connection:
+        async with connection.begin():
+            user_id = await _insert_user(
+                connection, sub="google|cart", email="cart-constraints@example.com"
+            )
+            menu_item_id = await _insert_menu_item(connection)
+            await connection.execute(
+                insert(Service).values(
+                    name="Home cleaning",
+                    description="Cleaning",
+                    is_active=True,
+                    sort_order=1,
+                    created_at=_now(),
+                    updated_at=_now(),
+                )
+            )
+            service_id = await connection.scalar(select(Service.id))
+            assert service_id is not None
+
+            food_line: dict[str, object] = {
+                "user_id": user_id,
+                "kind": "food",
+                "menu_item_id": menu_item_id,
+                "service_id": None,
+                "quantity": 1,
+                "preferred_date": None,
+                "created_at": _now(),
+                "updated_at": _now(),
+            }
+            await connection.execute(insert(CartItem).values(**food_line))
+
+            async def assert_rejected(values: dict[str, object]) -> None:
+                with pytest.raises(IntegrityError):
+                    async with connection.begin_nested():
+                        await connection.execute(insert(CartItem).values(**values))
+
+            # Only food or service lines are allowed.
+            await assert_rejected({**food_line, "kind": "drink"})
+            # Quantity must be positive.
+            await assert_rejected({**food_line, "quantity": 0})
+            # A food line needs a menu item and no service.
+            await assert_rejected({**food_line, "menu_item_id": None})
+            # A service line needs a service and no menu item.
+            await assert_rejected(
+                {
+                    **food_line,
+                    "kind": "service",
+                    "menu_item_id": menu_item_id,
+                    "service_id": service_id,
+                }
+            )
+            # The same food cannot appear twice in one cart.
+            await assert_rejected(food_line)
+
+            # The same service may be booked on different dates.
+            for preferred_date in (date(2026, 11, 1), date(2026, 11, 2)):
+                service_line: dict[str, object] = {
+                    **food_line,
+                    "kind": "service",
+                    "menu_item_id": None,
+                    "service_id": service_id,
+                    "preferred_date": preferred_date,
+                }
+                await connection.execute(insert(CartItem).values(**service_line))

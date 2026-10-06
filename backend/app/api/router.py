@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 from fastapi import (
     APIRouter,
@@ -21,10 +21,11 @@ from app.core.google import (
     InvalidAuthorizationCode,
 )
 from app.db.session import get_session
-from app.models import ServiceRequest
+from app.models import CartItem, ServiceRequest
 from app.payments.dependencies import get_payment_provider
 from app.payments.protocol import PaymentProvider
 from app.schemas.base import CursorPage
+from app.schemas.cart import CartItemResponse, CartReplaceRequest, CartResponse
 from app.schemas.orders import (
     OrderCreate,
     OrderDetailResponse,
@@ -41,6 +42,7 @@ from app.schemas.user import (
     MeResponse,
 )
 from app.services.auth import sign_in_with_google_code
+from app.services.cart import UnknownCartTarget, list_cart, replace_cart
 from app.services.orders import (
     IdempotencyKeyReused,
     OrderingClosedForDate,
@@ -96,6 +98,16 @@ def _service_request_response(
         owner_note=request.owner_note,
         created_at=request.created_at,
         updated_at=request.updated_at,
+    )
+
+
+def _cart_item_response(item: CartItem) -> CartItemResponse:
+    return CartItemResponse(
+        kind=cast(Literal["food", "service"], item.kind),
+        menu_item_id=item.menu_item_id,
+        service_id=item.service_id,
+        quantity=item.quantity,
+        preferred_date=item.preferred_date,
     )
 
 
@@ -159,6 +171,35 @@ async def post_google_sign_in(
             role=user.role,
         ),
     )
+
+
+@router.get("/cart", response_model=CartResponse)
+async def get_cart(
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CartResponse:
+    items = await list_cart(session, user_id=current_user.user.id)
+    return CartResponse(items=[_cart_item_response(item) for item in items])
+
+
+@router.put("/cart", response_model=CartResponse)
+async def put_cart(
+    body: CartReplaceRequest,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CartResponse:
+    try:
+        items = await replace_cart(
+            session,
+            user_id=current_user.user.id,
+            items=body.items,
+        )
+    except UnknownCartTarget as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="unknown_cart_item",
+        ) from error
+    return CartResponse(items=[_cart_item_response(item) for item in items])
 
 
 @router.post("/orders", response_model=OrderResponse)

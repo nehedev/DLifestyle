@@ -1,5 +1,6 @@
 """SQLAlchemy models package."""
 
+from app.models.cart_item import CartItem
 from app.models.menu_item import MenuItem
 from app.models.menu_item_day import MenuItemDay
 from app.models.order import Order
@@ -11,6 +12,7 @@ from app.models.store_settings import StoreSettings
 from app.models.user import User
 
 __all__ = [
+    "CartItem",
     "MenuItem",
     "MenuItemDay",
     "Order",
