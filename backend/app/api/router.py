@@ -130,7 +130,7 @@ async def post_google_sign_in(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> GoogleSignInResponse:
     try:
-        sign_in = await sign_in_with_google_code(session, body.code)
+        sign_in = await sign_in_with_google_code(session, body.code, body.redirect_uri)
     except InvalidAuthorizationCode as error:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

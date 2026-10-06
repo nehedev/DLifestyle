@@ -289,6 +289,25 @@ async def test_google_sign_in_exchanges_code_and_provisions_user(
     assert form["grant_type"] == "authorization_code"
 
 
+async def test_google_sign_in_forwards_a_native_redirect_uri(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    auth_client.exchanged_id_token["id_token"] = auth_client.token()
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "one-time-code", "redirect_uri": "damis://oauth"},
+    )
+
+    assert response.status_code == 200
+    assert await _user_count(test_engine) == 1
+
+    request = auth_client.code_exchange_requests[0]
+    form = dict(httpx.QueryParams(request.content.decode("utf-8")))
+    assert form["redirect_uri"] == "damis://oauth"
+
+
 async def test_google_sign_in_rejects_an_invalid_code(
     auth_client: AuthTestClient,
     test_engine: AsyncEngine,

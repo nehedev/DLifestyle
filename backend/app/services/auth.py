@@ -18,13 +18,19 @@ class GoogleSignIn:
     user: User
 
 
-async def sign_in_with_google_code(session: AsyncSession, code: str) -> GoogleSignIn:
+async def sign_in_with_google_code(
+    session: AsyncSession,
+    code: str,
+    redirect_uri: str | None = None,
+) -> GoogleSignIn:
     """Exchange a Google authorization code and provision the local user.
 
     The code is exchanged server-side with the client secret, then the returned
     ID token is verified against Google's JWKS before any session is issued.
+    The redirect URI must match the one the client used; native clients send it,
+    the web popup flow omits it and Google expects the literal "postmessage".
     """
-    id_token = await google.code_exchanger.exchange(code)
+    id_token = await google.code_exchanger.exchange(code, redirect_uri)
     claims: Mapping[str, Any] = await google.token_verifier.verify(id_token)
     user = await resolve_current_user(session, claims)
 

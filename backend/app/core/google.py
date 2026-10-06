@@ -128,12 +128,12 @@ class GoogleCodeExchanger:
         self._timeout_seconds = timeout_seconds
         self._transport = transport
 
-    async def exchange(self, code: str) -> str:
+    async def exchange(self, code: str, redirect_uri: str | None = None) -> str:
         payload = {
             "code": code,
             "client_id": self._client_id,
             "client_secret": self._client_secret,
-            "redirect_uri": _CODE_REDIRECT_URI,
+            "redirect_uri": redirect_uri or _CODE_REDIRECT_URI,
             "grant_type": "authorization_code",
         }
         try:

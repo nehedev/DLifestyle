@@ -14,6 +14,10 @@ class MeResponse(BaseModel):
 
 class GoogleSignInRequest(BaseModel):
     code: str
+    # Native apps run the auth-code flow against a registered deep-link redirect
+    # and must present the same value at the token exchange. The web popup flow
+    # omits it and falls back to Google's "postmessage".
+    redirect_uri: str | None = None
 
 
 class GoogleSignInResponse(BaseModel):
