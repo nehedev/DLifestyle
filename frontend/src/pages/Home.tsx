@@ -3,11 +3,31 @@ import { Plate } from '../components/Plate'
 import { Card } from './Catalog'
 import { useCatalog } from '../store'
 
-const SV: [string, string, string][] = [
-  ['lucide:utensils-crossed', '#0A6A1B', '#fff'],
-  ['lucide:sparkles', '#F2B01E', '#3D2817'],
-  ['lucide:bike', '#A71930', '#fff'],
-  ['lucide:layout-grid', '#FFFCE0', '#0A6A1B'],
+const STATIC_SERVICES = [
+  {
+    icon: 'lucide:utensils-crossed',
+    bg: '#2D7C3C',
+    color: '#fff',
+    title: 'Personal Chef',
+    desc: 'Custom meal prep & catering for events.',
+    to: '/menu?Catering',
+  },
+  {
+    icon: 'lucide:sparkles',
+    bg: '#F2B01E',
+    color: '#3D2817',
+    title: 'Home Cleaning',
+    desc: 'Keeping your home clean, fresh, and comfy.',
+    to: '/menu?Cleaning',
+  },
+  {
+    icon: 'lucide:bike',
+    bg: '#A71930',
+    color: '#fff',
+    title: 'Errand Running',
+    desc: 'Quick deliveries and personal tasks.',
+    to: '/menu?Errands',
+  },
 ]
 const WHY = [
   ['lucide:layers', 'Convenient', 'Meals and home help, ordered in one place.'],
@@ -19,7 +39,6 @@ const WHY = [
 export function Home() {
   const { items, loading, error, reload } = useCatalog()
   const food = items.filter((i) => i.kind === 'food')
-  const services = items.filter((i) => i.kind === 'service')
   const featured = food.slice(0, 4)
   const categories = [...new Set(food.map((i) => i.category))].slice(0, 4)
   const rings = categories
@@ -104,21 +123,18 @@ export function Home() {
           <h2>More than just food.</h2>
           <p>Let us handle the chores while you focus on what matters.</p>
           <div className="svc-list">
-            {services.map((service, index) => {
-              const [icon, background, color] = SV[index % SV.length]
-              return (
-                <A key={service.key} to={'/item/' + service.key} className="svc-row">
-                  <span className="ico" style={{ background, color }}>
-                    <iconify-icon icon={icon} />
-                  </span>
-                  <div>
-                    <h3>{service.name}</h3>
-                    <p>{service.desc}</p>
-                  </div>
-                  <iconify-icon icon="lucide:chevron-right" className="chev" />
-                </A>
-              )
-            })}
+            {STATIC_SERVICES.map((s) => (
+              <A key={s.title} to={s.to} className="svc-row">
+                <span className="ico" style={{ background: s.bg, color: s.color }}>
+                  <iconify-icon icon={s.icon} />
+                </span>
+                <div>
+                  <h3>{s.title}</h3>
+                  <p>{s.desc}</p>
+                </div>
+                <iconify-icon icon="lucide:chevron-right" className="chev" />
+              </A>
+            ))}
           </div>
         </div>
       </section>
