@@ -21,7 +21,8 @@ export const googleConfigured = Boolean(clientId)
 export interface Session {
   isAuthenticated: boolean
   isLoading: boolean
-  name?: string           // first name from /me, available after sign-in
+  name?: string      // first name from /me
+  picture?: string   // Google profile photo URL
   login: () => void
   logout: () => void
   error?: string
@@ -62,6 +63,7 @@ function clearToken() {
 function GoogleSession({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(loadToken)
   const [name, setName] = useState<string | undefined>()
+  const [picture, setPicture] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
   const [isLoading, setIsLoading] = useState(false)
   const tokenRef = useRef(token)
@@ -73,11 +75,17 @@ function GoogleSession({ children }: { children: ReactNode }) {
     return () => setAccessTokenGetter(async () => undefined)
   }, [])
 
-  // Fetch first name once we have a token
+  // Fetch name from /me and profile picture from Google userinfo on sign-in
   useEffect(() => {
-    if (!token) { setName(undefined); return }
+    if (!token) { setName(undefined); setPicture(undefined); return }
     getMe()
       .then(me => setName(me.first_name))
+      .catch(() => undefined)
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then((data: { picture?: string }) => { if (data.picture) setPicture(data.picture) })
       .catch(() => undefined)
   }, [token])
 
@@ -109,12 +117,13 @@ function GoogleSession({ children }: { children: ReactNode }) {
     clearToken()
     setToken(null)
     setName(undefined)
+    setPicture(undefined)
     setError(undefined)
   }, [])
 
   const value = useMemo<Session>(
-    () => ({ isAuthenticated: Boolean(token), isLoading, name, login, logout, error }),
-    [token, isLoading, name, login, logout, error],
+    () => ({ isAuthenticated: Boolean(token), isLoading, name, picture, login, logout, error }),
+    [token, isLoading, name, picture, login, logout, error],
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
