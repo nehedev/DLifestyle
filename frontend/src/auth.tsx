@@ -20,9 +20,10 @@ export const googleConfigured = Boolean(clientId)
 
 export interface Session {
   isAuthenticated: boolean
-  isLoading: boolean
-  name?: string      // first name, available after the backend verifies the token
-  picture?: string   // Google profile photo URL
+  isLoading: boolean   // true only while the Google popup is open
+  ready: boolean       // false until the token getter is wired into the API client
+  name?: string
+  picture?: string
   login: () => void
   logout: () => void
   error?: string
@@ -31,6 +32,7 @@ export interface Session {
 const SessionContext = createContext<Session>({
   isAuthenticated: false,
   isLoading: false,
+  ready: false,
   login: () => alert('Sign-in is not configured. Set VITE_GOOGLE_CLIENT_ID to enable it.'),
   logout: () => undefined,
 })
@@ -104,14 +106,21 @@ function GoogleSession({ children }: { children: ReactNode }) {
   const [picture, setPicture] = useState<string | undefined>(initial?.picture)
   const [error, setError] = useState<string | undefined>()
   const [isLoading, setIsLoading] = useState(false)
+  const [ready, setReady] = useState(false)
   const [welcome, setWelcome] = useState<string | null>(null)
   const tokenRef = useRef(token)
   tokenRef.current = token
 
-  // Wire the verified ID token into the API client
+  // Wire the verified ID token into the API client.
+  // Mark ready=true AFTER wiring so pages that gate on `ready` always have
+  // a working token getter before they fire their first API call.
   useEffect(() => {
     setAccessTokenGetter(async () => tokenRef.current ?? undefined)
-    return () => setAccessTokenGetter(async () => undefined)
+    setReady(true)
+    return () => {
+      setAccessTokenGetter(async () => undefined)
+      setReady(false)
+    }
   }, [])
 
   // The Google code is useless on its own: it must be verified by the backend
@@ -172,8 +181,8 @@ function GoogleSession({ children }: { children: ReactNode }) {
   const dismissWelcome = useCallback(() => setWelcome(null), [])
 
   const value = useMemo<Session>(
-    () => ({ isAuthenticated: Boolean(token), isLoading, name, picture, login, logout, error }),
-    [token, isLoading, name, picture, login, logout, error],
+    () => ({ isAuthenticated: Boolean(token), isLoading, ready, name, picture, login, logout, error }),
+    [token, isLoading, ready, name, picture, login, logout, error],
   )
 
   return (
@@ -191,6 +200,7 @@ function UnconfiguredSession({ children }: { children: ReactNode }) {
     () => ({
       isAuthenticated: false,
       isLoading: false,
+      ready: true,
       login: () => alert('Sign-in is not configured. Set VITE_GOOGLE_CLIENT_ID to enable it.'),
       logout: () => undefined,
     }),
@@ -215,18 +225,18 @@ export function AppAuth({ children }: { children: ReactNode }) {
 // ─── Admin hook ───────────────────────────────────────────────────────────────
 
 export function useAdmin(): { isAdmin: boolean; me: MeResponse | null; loading: boolean } {
-  const { isAuthenticated, isLoading } = useSession()
+  const { isAuthenticated, isLoading, ready } = useSession()
   const [me, setMe] = useState<MeResponse | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!isAuthenticated) { setMe(null); return }
+    if (!ready || !isAuthenticated) { setMe(null); return }
     setLoading(true)
     getMe()
       .then(setMe)
       .catch(() => setMe(null))
       .finally(() => setLoading(false))
-  }, [isAuthenticated])
+  }, [ready, isAuthenticated])
 
-  return { isAdmin: me?.role === 'admin', me, loading: isLoading || loading }
+  return { isAdmin: me?.role === 'admin', me, loading: isLoading || !ready || loading }
 }

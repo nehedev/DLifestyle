@@ -7,7 +7,7 @@ import { Row } from './Cart'
 import { useSession } from '../auth'
 
 export function OrderStatus({ orderId }: { orderId: number }) {
-  const { isAuthenticated, login } = useSession()
+  const { isAuthenticated, ready, login } = useSession()
   const [order, setOrder] = useState<OrderResponse | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -21,8 +21,10 @@ export function OrderStatus({ orderId }: { orderId: number }) {
   }, [orderId])
 
   useEffect(() => {
-    if (isAuthenticated) void load()
-  }, [isAuthenticated, load])
+    if (ready && isAuthenticated) void load()
+  }, [ready, isAuthenticated, load])
+
+  if (!ready) return <div className="wrap page"><p>Loading…</p></div>
 
   if (!isAuthenticated)
     return (

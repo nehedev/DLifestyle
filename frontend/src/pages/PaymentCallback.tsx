@@ -20,7 +20,7 @@ function goTo(hash: string) {
 }
 
 export function PaymentCallback() {
-  const { isAuthenticated, isLoading, login } = useSession()
+  const { isAuthenticated, isLoading, ready, login } = useSession()
 
   // Read orderId once on mount — stable ref, never changes
   const orderId = useRef<number | null>(null)
@@ -34,19 +34,9 @@ export function PaymentCallback() {
   const [errMsg, setErrMsg] = useState('')
   const polls = useRef(0)
   const stopped = useRef(false)
-  // Track whether the token getter has been wired by the auth provider's useEffect.
-  // We delay the first poll by one tick to let the auth useEffect run first.
-  const [authReady, setAuthReady] = useState(false)
-
-  // One tick after auth state settles, mark ready so the poll effect fires
-  useEffect(() => {
-    if (isLoading) return
-    const id = setTimeout(() => setAuthReady(true), 0)
-    return () => clearTimeout(id)
-  }, [isLoading])
 
   useEffect(() => {
-    if (!authReady) return
+    if (!ready) return
     if (!isAuthenticated) {
       setPhase('failed')
       setErrMsg('You need to be signed in to confirm your payment.')
@@ -63,8 +53,7 @@ export function PaymentCallback() {
     stopped.current = false
     polls.current = 0
 
-    const poll = async () => {
-      if (stopped.current) return
+    const poll = async () => {      if (stopped.current) return
       try {
         const o = await getOrder(id)
         if (stopped.current) return
@@ -94,19 +83,41 @@ export function PaymentCallback() {
 
     void poll()
     return () => { stopped.current = true }
-  }, [authReady, isAuthenticated])
+  }, [ready, isAuthenticated])
 
   const retry = () => {
     setPhase('processing')
     setErrMsg('')
-    setAuthReady(false)
     polls.current = 0
-    setTimeout(() => setAuthReady(true), 0)
+    stopped.current = false
+    // re-trigger the effect
+    void (async () => {
+      const id = orderId.current
+      if (!id || !isAuthenticated) return
+      stopped.current = false
+      const poll = async () => {
+        if (stopped.current) return
+        try {
+          const o = await getOrder(id)
+          if (stopped.current) return
+          setOrder(o)
+          const p = phaseFromOrder(o)
+          setPhase(p)
+          if (p === 'processing') {
+            if (polls.current < MAX_POLLS) {
+              polls.current += 1
+              setTimeout(() => { void poll() }, POLL_INTERVAL_MS)
+            } else { setPhase('timeout') }
+          }
+        } catch { setPhase('failed') }
+      }
+      void poll()
+    })()
   }
 
   // ── Loading / auth settling ───────────────────────────────────────────────
 
-  if (isLoading || !authReady) {
+  if (isLoading || !ready) {
     return (
       <div className="pcb-backdrop">
         <div className="pcb-card">

@@ -14,7 +14,7 @@ const CANCELLABLE_ORDER = 'pending'
 const CANCELLABLE_REQUEST = ['requested', 'contacted']
 
 export function Requests() {
-  const { isAuthenticated, isLoading, login } = useSession()
+  const { isAuthenticated, isLoading, ready, login } = useSession()
   const [orders, setOrders] = useState<OrderResponse[]>([])
   const [requests, setRequests] = useState<ServiceRequestResponse[]>([])
   const [error, setError] = useState('')
@@ -46,10 +46,10 @@ export function Requests() {
   )
 
   useEffect(() => {
-    if (isAuthenticated) void load()
-  }, [isAuthenticated, load])
+    if (ready && isAuthenticated) void load()
+  }, [ready, isAuthenticated, load])
 
-  if (isLoading) return <div className="wrap page"><p>Loading…</p></div>
+  if (isLoading || !ready) return <div className="wrap page"><p>Loading…</p></div>
   if (!isAuthenticated)
     return (
       <div className="wrap page empty">
