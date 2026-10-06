@@ -107,3 +107,110 @@ body{padding-bottom:92px}
 .hero h1{max-width:90%;font-size:clamp(32px,8vw,48px)}.hero p{font-size:17px;margin:20px 0 28px}.hero .cta .btn{flex:1}.hero .facts{margin-top:24px;gap:12px 16px;font-size:14px}
 .buy{bottom:84px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+/* ─── Admin dashboard ──────────────────────────────────────────────────────── */
+.adm-shell{display:grid;grid-template-columns:220px 1fr;grid-template-rows:auto 1fr;min-height:100vh;background:#f4f6f5}
+.adm-sidebar{grid-row:1/-1;background:var(--green-d);color:#fff;display:flex;flex-direction:column;gap:0;padding:0 0 16px}
+.adm-logo{display:flex;align-items:center;gap:10px;padding:20px 18px 16px;font:800 16px 'Bricolage Grotesque';border-bottom:1px solid #ffffff22;color:var(--gold)}
+.adm-logo iconify-icon{font-size:22px}
+.adm-sidebar ul{list-style:none;padding:10px 0;margin:0;flex:1}
+.adm-sidebar li button{width:100%;display:flex;align-items:center;gap:12px;padding:11px 18px;background:none;border:0;color:#ffffffcc;font:600 14px Figtree;cursor:pointer;text-align:left;transition:background .12s}
+.adm-sidebar li button:hover,.adm-sidebar li button.on{background:#ffffff18;color:#fff}
+.adm-sidebar li button.on{border-left:3px solid var(--gold);padding-left:15px}
+.adm-sidebar li button iconify-icon{font-size:18px;flex:none}
+.adm-signout{margin:8px 12px 0;align-self:stretch;display:flex;align-items:center;gap:8px;justify-content:center}
+.adm-mob-hdr{display:none;grid-column:1/-1;align-items:center;gap:12px;padding:0 16px;height:54px;background:var(--green-d);color:#fff;font:700 15px Figtree;position:sticky;top:0;z-index:20}
+.adm-burger{background:none;border:0;color:#fff;font-size:24px;cursor:pointer;padding:4px}
+.adm-main{grid-column:2;padding:28px 28px 60px;overflow-y:auto}
+
+/* Section headers */
+.adm-section{max-width:1100px}
+.adm-section-hdr{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+.adm-section-hdr h1{font-size:clamp(22px,3vw,30px);font-weight:800;color:var(--green);margin:0}
+.adm-select{font:inherit;padding:8px 12px;border:1.5px solid var(--line);border-radius:8px;background:#fff;cursor:pointer}
+
+/* Tables */
+.adm-table{width:100%;border-collapse:collapse;font-size:14px;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.adm-table th{background:var(--cream-2);padding:10px 14px;text-align:left;font-weight:700;font-size:13px;color:var(--mut);white-space:nowrap}
+.adm-table td{padding:10px 14px;border-top:1px solid var(--line);vertical-align:middle}
+.adm-table tbody tr:hover{background:#f9f8ef}
+.adm-table tfoot td{border-top:2px solid var(--line);font-size:13px}
+.adm-inactive td{opacity:.5}
+
+/* Badges */
+.adm-badge{display:inline-block;padding:3px 9px;border-radius:999px;font:700 12px Figtree;color:#fff;white-space:nowrap}
+
+/* Row thumb (menu list) */
+.adm-row-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;vertical-align:middle;margin-right:8px}
+.adm-thumb{max-width:120px;max-height:80px;border-radius:8px;margin:6px 0;object-fit:cover}
+
+/* Code ref */
+.adm-ref{font-size:12px;background:var(--cream-2);padding:2px 6px;border-radius:4px}
+
+/* Meta block inside drawers */
+.adm-meta{display:flex;flex-direction:column;gap:6px;font-size:14px;padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:12px}
+.adm-meta span{display:flex;gap:8px;flex-wrap:wrap}
+.adm-meta b{color:var(--ink);min-width:80px}
+.adm-info-row{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:20px;font-size:14px;color:var(--mut)}
+.adm-info-row b{color:var(--ink)}
+
+/* Form inside drawer */
+.adm-form{display:flex;flex-direction:column;gap:14px;padding-top:8px}
+.adm-toggles{display:flex;gap:20px;font-size:14px;font-weight:600}
+.adm-toggles label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.adm-weekdays{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.adm-day{padding:6px 12px;border-radius:999px;border:1.5px solid var(--line);font:600 13px Figtree;cursor:pointer;user-select:none;transition:background .12s}
+.adm-day.on{background:var(--green);color:#fff;border-color:var(--green)}
+.adm-day input.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.adm-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+.adm-ok{color:var(--green);font-weight:600;font-size:14px}
+
+/* Overlay + drawer */
+.adm-overlay{position:fixed;inset:0;background:#0007;z-index:40;display:flex;justify-content:flex-end}
+.adm-drawer{width:min(500px,100vw);height:100%;background:#fff;display:flex;flex-direction:column;overflow-y:auto;box-shadow:-8px 0 32px #0002}
+.adm-drawer-hdr{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff;z-index:1}
+.adm-drawer-hdr h2{margin:0;font-size:20px;font-weight:800;color:var(--green)}
+.adm-close{background:none;border:0;font-size:22px;cursor:pointer;color:var(--mut);padding:4px;line-height:1}
+.adm-drawer .adm-meta,.adm-drawer .adm-form,.adm-drawer .adm-table,.adm-drawer .adm-actions{padding-left:20px;padding-right:20px}
+.adm-drawer .adm-table{margin:0 20px;width:calc(100% - 40px);font-size:13px}
+.adm-drawer .note{padding:20px}
+
+/* Gate screens (not logged in / not admin) */
+.adm-gate{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:40px 24px;background:var(--cream)}
+.adm-gate h1{font-size:28px;font-weight:800;color:var(--green)}
+.adm-gate p{color:var(--mut);max-width:360px}
+.adm-gate-icon{font-size:56px;color:var(--green);opacity:.4}
+
+/* Admin responsive */
+@media(max-width:760px){
+  .adm-shell{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .adm-mob-hdr{display:flex}
+  .adm-sidebar{grid-row:auto;position:fixed;top:54px;left:0;bottom:0;width:240px;z-index:30;transform:translateX(-100%);transition:transform .2s}
+  .adm-sidebar.open{transform:translateX(0)}
+  .adm-main{grid-column:1;padding:20px 16px 60px}
+  .adm-table th:nth-child(n+5),.adm-table td:nth-child(n+5){display:none}
+}
+
+/* ─── Payment callback popup ───────────────────────────────────────────────── */
+.pcb-backdrop{position:fixed;inset:0;background:#0006;display:grid;place-items:center;z-index:50;padding:16px}
+.pcb-card{background:#fff;border-radius:24px;padding:40px 32px;max-width:440px;width:100%;text-align:center;box-shadow:0 24px 60px -12px #0003;display:flex;flex-direction:column;align-items:center;gap:16px;animation:pcb-in .25s ease}
+@keyframes pcb-in{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+.pcb-card h2{font-size:22px;font-weight:800;color:var(--ink);margin:0}
+.pcb-card p{color:var(--mut);margin:0;font-size:15px;max-width:320px}
+
+/* Processing spinner */
+.pcb-spinner{width:56px;height:56px;border-radius:50%;border:5px solid var(--line);border-top-color:var(--green);animation:spin .8s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.pcb-spinner{animation:none;border-color:var(--green)}}
+
+/* Success / failed icons */
+.pcb-icon{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;font-size:28px;font-weight:900;flex:none}
+.pcb-icon-ok{background:var(--green);color:var(--gold)}
+.pcb-icon-fail{background:var(--burg);color:#fff}
+
+/* Order summary inside callback */
+.pcb-summary{width:100%;background:var(--cream-2);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;text-align:left;font-size:14px}
+.pcb-row{display:flex;justify-content:space-between;gap:8px}
+.pcb-row-total{font-weight:800;font-size:16px;border-top:1.5px solid var(--line);padding-top:8px;margin-top:4px}
+.pcb-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;width:100%}
+.pcb-actions .btn{flex:1;min-width:120px}

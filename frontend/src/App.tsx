@@ -7,6 +7,8 @@ import { Cart } from './pages/Cart'
 import { Checkout } from './pages/Checkout'
 import { LastOrder } from './pages/OrderStatus'
 import { Requests } from './pages/Requests'
+import { PaymentCallback } from './pages/PaymentCallback'
+import { AdminDashboard } from './pages/admin/index'
 import { AppAuth } from './auth'
 import { CartProvider, CatalogProvider, useCart } from './store'
 
@@ -16,11 +18,16 @@ function Shell() {
   const [hashPath, qs] = (route.join('/') + '').split('?')
   const [h0, h1] = hashPath.split('/')
 
-  // Paystack returns to a plain path (no hash). Treat both forms as the
-  // payment callback route.
+  // Real-path routes: admin and payment callback bypass the hash router and
+  // render without the storefront chrome (header, footer, pill nav).
   const onCallbackPath = window.location.pathname.endsWith('/payment/callback')
-  const r0 = onCallbackPath ? 'payment' : h0
-  const r1 = onCallbackPath ? 'callback' : h1
+  const onAdminPath = window.location.pathname.startsWith('/admin')
+
+  if (onAdminPath) return <AdminDashboard />
+  if (onCallbackPath) return <PaymentCallback />
+
+  const r0 = h0
+  const r1 = h1
 
   return (
     <>
@@ -32,7 +39,6 @@ function Shell() {
         {r0 === 'cart' && <Cart />}
         {r0 === 'checkout' && <Checkout />}
         {r0 === 'confirmed' && <LastOrder />}
-        {r0 === 'payment' && r1 === 'callback' && <LastOrder />}
         {r0 === 'requests' && <Requests />}
       </main>
       <Footer />
