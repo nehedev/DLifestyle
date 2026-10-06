@@ -92,7 +92,7 @@ body{padding-bottom:88px}}
 .hdr-in{gap:20px}.brand{display:flex;align-items:center;gap:10px}.mark{width:34px;height:34px;border-radius:9px;background:var(--green);color:#fff;display:grid;place-items:center;font:800 19px 'Bricolage Grotesque'}
 .wm{font:800 13px/1.15 'Bricolage Grotesque';text-transform:uppercase;letter-spacing:.02em}
 .nav a{opacity:1;font-size:15px;color:var(--ink)}.nav a:hover{box-shadow:0 2px 0 var(--green)}
-.cartbtn{position:relative;font-size:0}.cartbtn iconify-icon{font-size:24px}.cartbtn b{position:absolute;top:-7px;right:-9px;min-width:18px;height:18px;font-size:11px;padding:0 4px}
+.cartbtn{position:relative;font-size:0}.cartbtn iconify-icon{font-size:24px}.cartbtn b{position:absolute;top:-7px;right:-9px;min-width:18px;height:18px;font-size:11px;padding:0 4px;background:var(--burg);color:#fff;font-weight:700;border-radius:9px;display:grid;place-items:center;font-family:Figtree}
 .burger{width:36px;height:36px;font-size:26px;color:var(--ink)}.burger span{display:none}
 .hero{position:relative;background:#1a1a1a;overflow:hidden;min-height:620px}.hero::before{content:'';position:absolute;inset:0;background:url(/img/chef.jpeg) center/cover no-repeat;opacity:.85}.hero::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(10,106,27,.75) 0%,rgba(61,40,23,.65) 100%)}
 .hero-in{position:relative;z-index:2;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;min-height:620px;padding-top:80px;padding-bottom:80px}

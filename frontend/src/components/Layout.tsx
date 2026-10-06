@@ -107,7 +107,7 @@ export function Header({ count, go }: { count: number; go: string }) {
         <div className="hdr-r">
           <A to="/cart" className="cartbtn" aria-label={`Cart, ${count} items`}>
             <iconify-icon icon="lucide:shopping-cart" />
-            <b>{count}</b>
+            {count > 0 && <b>{count}</b>}
           </A>
           {isAuthenticated
             ? <UserMenu name={name} picture={picture} logout={logout} />

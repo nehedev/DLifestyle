@@ -45,8 +45,7 @@ function Shell() {
       <nav className="pill" aria-label="Quick">
         {([
           ['/', 'lucide:home', 'Home', !r0],
-          ['/menu', 'lucide:utensils', 'Menu', r0 === 'menu' && qs !== 'svc'],
-          ['/menu?svc', 'lucide:calendar', 'Services', r0 === 'menu' && qs === 'svc'],
+          ['/menu', 'lucide:utensils', 'Menu', r0 === 'menu'],
           ['/cart', 'lucide:shopping-bag', 'Cart', r0 === 'cart'],
           ['/requests', 'lucide:receipt', 'Account', r0 === 'requests'],
         ] as [string, string, string, boolean][]).map(([to, ic, l, on]) => (
