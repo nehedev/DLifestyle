@@ -54,6 +54,7 @@ export function Cart() {
                         ? 'Preferred date: ' + line.preferred_date
                         : 'Service request'
                       : 'Meal'}
+                    {line.available === false && ' · Currently unavailable'}
                   </p>
                   <div className="line-c">
                     {line.kind === 'food' ? (

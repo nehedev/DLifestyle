@@ -4,12 +4,14 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
-import { ApiError, getMenu, getServices, getStore } from './api'
-import type { MenuItem, Service, StoreInfo } from './api'
-import { foodKey, serviceKey, type CartLine, type CatalogItem } from './types'
+import { ApiError, getCart, getMenu, getServices, getStore, putCart } from './api'
+import type { CartLinePayload, MenuItem, Service, StoreInfo } from './api'
+import { useSession } from './auth'
+import { foodKey, serviceKey, type CartLine, type CatalogItem, type Kind } from './types'
 
 const CART_STORAGE_KEY = 'damis.cart'
 
@@ -132,40 +134,168 @@ interface CartValue {
 
 const CartContext = createContext<CartValue | null>(null)
 
-function loadStoredCart(): CartLine[] {
+/** The persistable shape of a cart line; names and prices come from the catalog. */
+interface CartEntry {
+  kind: Kind
+  id: number
+  qty: number
+  preferred_date?: string
+}
+
+const entryKey = (entry: CartEntry): string =>
+  entry.kind === 'service' ? serviceKey(entry.id, entry.preferred_date) : foodKey(entry.id)
+
+function loadEntries(): CartEntry[] {
   try {
     const raw = localStorage.getItem(CART_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as CartLine[]) : []
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const entries: CartEntry[] = []
+    for (const value of parsed) {
+      if (!value || typeof value !== 'object') continue
+      const record = value as Record<string, unknown>
+      const { kind, id, qty, preferred_date: preferred } = record
+      if ((kind !== 'food' && kind !== 'service') || typeof id !== 'number') continue
+      const lineKind: Kind = kind === 'food' ? 'food' : 'service'
+      const quantity = typeof qty === 'number' && qty > 0 ? qty : 1
+      const preferredDate = typeof preferred === 'string' ? preferred : undefined
+      entries.push({
+        kind: lineKind,
+        id,
+        qty: lineKind === 'service' ? 1 : quantity,
+        preferred_date: lineKind === 'service' ? preferredDate : undefined,
+      })
+    }
+    return entries
   } catch {
     return []
   }
 }
 
-export function CartProvider({ children }: { children: ReactNode }) {
-  const [lines, setLines] = useState<CartLine[]>(loadStoredCart)
+const toPayload = (entries: CartEntry[]): CartLinePayload[] =>
+  entries.map((entry) => ({
+    kind: entry.kind,
+    menu_item_id: entry.kind === 'food' ? entry.id : null,
+    service_id: entry.kind === 'service' ? entry.id : null,
+    quantity: entry.kind === 'service' ? 1 : entry.qty,
+    preferred_date: entry.kind === 'service' ? entry.preferred_date ?? null : null,
+  }))
 
+const fromServer = (items: CartLinePayload[]): CartEntry[] =>
+  items.map((item) => {
+    const kind: Kind = item.kind
+    return {
+      kind,
+      id: (kind === 'food' ? item.menu_item_id : item.service_id) ?? 0,
+      qty: kind === 'service' ? 1 : item.quantity,
+      preferred_date: kind === 'service' ? item.preferred_date ?? undefined : undefined,
+    }
+  })
+
+/** Union of the server cart and the anonymous local cart; food quantities add up. */
+function mergeEntries(server: CartEntry[], local: CartEntry[]): CartEntry[] {
+  const merged = server.map((entry) => ({ ...entry }))
+  for (const entry of local) {
+    const existing = merged.find((candidate) => entryKey(candidate) === entryKey(entry))
+    if (!existing) {
+      merged.push({ ...entry })
+    } else if (entry.kind === 'food') {
+      existing.qty += entry.qty
+    }
+  }
+  return merged
+}
+
+function hydrate(entry: CartEntry, items: CatalogItem[]): CartLine {
+  const item = items.find(
+    (candidate) => candidate.kind === entry.kind && candidate.id === entry.id,
+  )
+  const available = item ? !(entry.kind === 'food' && item.sold_out) : false
+  return {
+    key: entryKey(entry),
+    kind: entry.kind,
+    id: entry.id,
+    name: item?.name ?? 'Unavailable item',
+    unit_price_minor: item?.price_minor ?? 0,
+    qty: entry.qty,
+    preferred_date: entry.preferred_date,
+    available,
+  }
+}
+
+export function CartProvider({ children }: { children: ReactNode }) {
+  const { isAuthenticated } = useSession()
+  const { items: catalogItems } = useCatalog()
+  const [entries, setEntries] = useState<CartEntry[]>(loadEntries)
+  const [serverReady, setServerReady] = useState(false)
+  const previousAuth = useRef<boolean | null>(null)
+
+  // On sign-in, merge the local cart into the server cart; on sign-out, drop
+  // the local cache so the next person on the device starts clean.
   useEffect(() => {
-    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(lines))
-  }, [lines])
+    const wasAuthenticated = previousAuth.current
+    previousAuth.current = isAuthenticated
+
+    if (!isAuthenticated) {
+      setServerReady(false)
+      if (wasAuthenticated === true) {
+        setEntries([])
+        localStorage.removeItem(CART_STORAGE_KEY)
+      }
+      return
+    }
+
+    let active = true
+    setServerReady(false)
+    getCart()
+      .then((page) => {
+        if (!active) return
+        const serverEntries = fromServer(page.items)
+        setEntries((current) =>
+          wasAuthenticated === false ? mergeEntries(serverEntries, current) : serverEntries,
+        )
+        localStorage.removeItem(CART_STORAGE_KEY)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setServerReady(true)
+      })
+    return () => {
+      active = false
+    }
+  }, [isAuthenticated])
+
+  // Signed-out carts live in localStorage only.
+  useEffect(() => {
+    if (isAuthenticated) return
+    localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(entries))
+  }, [entries, isAuthenticated])
+
+  // Signed-in changes are mirrored to the server (debounced).
+  useEffect(() => {
+    if (!isAuthenticated || !serverReady) return
+    const timer = setTimeout(() => {
+      void putCart(toPayload(entries)).catch(() => undefined)
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [entries, isAuthenticated, serverReady])
 
   const add = useCallback((item: CatalogItem, qty = 1, date?: string) => {
-    const key = item.kind === 'service' ? serviceKey(item.id, date) : foodKey(item.id)
-    setLines((current) => {
-      const existing = current.find((line) => line.key === key)
+    setEntries((current) => {
+      const key = item.kind === 'service' ? serviceKey(item.id, date) : foodKey(item.id)
+      const existing = current.find((entry) => entryKey(entry) === key)
       if (existing) {
         if (item.kind === 'service') return current
-        return current.map((line) =>
-          line.key === key ? { ...line, qty: line.qty + qty } : line,
+        return current.map((entry) =>
+          entryKey(entry) === key ? { ...entry, qty: entry.qty + qty } : entry,
         )
       }
       return [
         ...current,
         {
-          key,
           kind: item.kind,
           id: item.id,
-          name: item.name,
-          unit_price_minor: item.price_minor ?? 0,
           qty: item.kind === 'service' ? 1 : qty,
           preferred_date: item.kind === 'service' ? date : undefined,
         },
@@ -174,22 +304,31 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const setQty = useCallback((key: string, qty: number) => {
-    setLines((current) =>
-      current.map((line) => (line.key === key ? { ...line, qty: Math.max(1, qty) } : line)),
+    setEntries((current) =>
+      current.map((entry) =>
+        entryKey(entry) === key ? { ...entry, qty: Math.max(1, qty) } : entry,
+      ),
     )
   }, [])
 
   const remove = useCallback((key: string) => {
-    setLines((current) => current.filter((line) => line.key !== key))
+    setEntries((current) => current.filter((entry) => entryKey(entry) !== key))
   }, [])
 
-  const clear = useCallback(() => setLines([]), [])
+  const clear = useCallback(() => {
+    setEntries([])
+    if (isAuthenticated) void putCart([]).catch(() => undefined)
+  }, [isAuthenticated])
 
+  const lines = useMemo(
+    () => entries.map((entry) => hydrate(entry, catalogItems)),
+    [entries, catalogItems],
+  )
   const count = useMemo(() => lines.reduce((sum, line) => sum + line.qty, 0), [lines])
   const itemsTotalMinor = useMemo(
     () =>
       lines
-        .filter((line) => line.kind === 'food')
+        .filter((line) => line.kind === 'food' && line.available !== false)
         .reduce((sum, line) => sum + line.unit_price_minor * line.qty, 0),
     [lines],
   )

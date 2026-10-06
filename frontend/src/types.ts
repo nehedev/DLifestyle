@@ -27,6 +27,8 @@ export interface CartLine {
   qty: number
   /** Service requests only. */
   preferred_date?: string
+  /** False when the catalog item is missing, inactive, or sold out. */
+  available?: boolean
 }
 
 export const foodKey = (id: number) => `food:${id}`

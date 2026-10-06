@@ -104,6 +104,18 @@ export interface GoogleSignInResponse {
   user: MeResponse
 }
 
+export interface CartLinePayload {
+  kind: 'food' | 'service'
+  menu_item_id: number | null
+  service_id: number | null
+  quantity: number
+  preferred_date: string | null
+}
+
+export interface CartPage {
+  items: CartLinePayload[]
+}
+
 export class ApiError extends Error {
   status: number
   detail: unknown
@@ -171,6 +183,16 @@ export const googleSignIn = (code: string): Promise<GoogleSignInResponse> =>
   request<GoogleSignInResponse>('/api/v1/auth/google', {
     method: 'POST',
     body: JSON.stringify({ code }),
+  })
+
+/** Loads the signed-in user's cart. */
+export const getCart = (): Promise<CartPage> => request<CartPage>('/api/v1/cart')
+
+/** Replaces the signed-in user's cart with the given snapshot. */
+export const putCart = (items: CartLinePayload[]): Promise<CartPage> =>
+  request<CartPage>('/api/v1/cart', {
+    method: 'PUT',
+    body: JSON.stringify({ items }),
   })
 
 export const createOrder = (
