@@ -9,9 +9,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useState,
   type ReactNode,
 } from 'react'
 import { setAccessTokenGetter } from './api'
+import { getMe } from './api'
+import type { MeResponse } from './api'
 
 const domain = import.meta.env.VITE_AUTH0_DOMAIN
 const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID
@@ -121,3 +124,21 @@ export function AppAuth({ children }: { children: ReactNode }) {
 }
 
 export type { Auth0User }
+
+/** Fetches /me once authenticated and exposes the admin role flag. */
+export function useAdmin(): { isAdmin: boolean; me: MeResponse | null; loading: boolean } {
+  const { isAuthenticated, isLoading } = useSession()
+  const [me, setMe] = useState<MeResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!isAuthenticated) { setMe(null); return }
+    setLoading(true)
+    getMe()
+      .then(setMe)
+      .catch(() => setMe(null))
+      .finally(() => setLoading(false))
+  }, [isAuthenticated])
+
+  return { isAdmin: me?.role === 'admin', me, loading: isLoading || loading }
+}
