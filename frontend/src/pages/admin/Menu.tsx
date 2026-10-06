@@ -73,16 +73,23 @@ function MenuItemForm({
       fd.append('timestamp', String(sign.timestamp))
       fd.append('folder', sign.folder)
       fd.append('signature', sign.signature)
+      // Do NOT set Content-Type — browser sets multipart/form-data with boundary automatically
       const res = await fetch(sign.upload_url, { method: 'POST', body: fd })
-      const data = await res.json() as { secure_url?: string; original_filename?: string }
-      if (!data.secure_url) throw new Error('Upload failed')
+      const data = await res.json() as {
+        secure_url?: string
+        original_filename?: string
+        error?: { message: string }
+      }
+      if (!res.ok || !data.secure_url) {
+        throw new Error(data.error?.message ?? `Cloudinary error (${res.status})`)
+      }
       setForm(f => ({
         ...f,
         image_url: data.secure_url!,
         image_alt: f.image_alt || data.original_filename || '',
       }))
-    } catch {
-      setErr('Image upload failed. Check your Cloudinary settings.')
+    } catch (e) {
+      setErr(e instanceof Error ? `Upload failed: ${e.message}` : 'Upload failed.')
     } finally {
       setUploading(false)
     }
@@ -133,21 +140,40 @@ function MenuItemForm({
           <label className="fld">Description
             <textarea className="inp" rows={2} value={form.description ?? ''} onChange={set('description')} />
           </label>
-          <label className="fld">Image URL
-            <input className="inp" value={form.image_url ?? ''} onChange={set('image_url')} placeholder="https://…" />
-          </label>
-          <label className="fld">Or upload image
-            <input
-              type="file"
-              accept="image/*"
-              className="inp"
-              onChange={e => { if (e.target.files?.[0]) void uploadImage(e.target.files[0]) }}
-              disabled={uploading}
-            />
-          </label>
-          {form.image_url && <img src={form.image_url} alt="" className="adm-thumb" />}
+          <div className="fld">
+            <span>Image</span>
+            <div className="adm-upload-area">
+              {form.image_url
+                ? (
+                  <div className="adm-upload-preview">
+                    <img src={form.image_url} alt="" className="adm-thumb" />
+                    <button
+                      type="button"
+                      className="adm-upload-remove"
+                      onClick={() => setForm(f => ({ ...f, image_url: '', image_alt: '' }))}
+                    >
+                      <iconify-icon icon="lucide:x" /> Remove
+                    </button>
+                  </div>
+                )
+                : (
+                  <label className="adm-upload-btn">
+                    <iconify-icon icon="lucide:image-plus" />
+                    <span>{uploading ? 'Uploading…' : 'Choose image'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="sr"
+                      onChange={e => { if (e.target.files?.[0]) void uploadImage(e.target.files[0]) }}
+                      disabled={uploading}
+                    />
+                  </label>
+                )}
+            </div>
+          </div>
           <label className="fld">Image alt text
-            <input className="inp" value={form.image_alt ?? ''} onChange={set('image_alt')} />
+            <input className="inp" value={form.image_alt ?? ''} onChange={set('image_alt')}
+              placeholder="Describe the image for screen readers" />
           </label>
           <div className="fld">Days served<WeekdayPicker value={form.weekdays} onChange={days => setForm(f => ({ ...f, weekdays: days }))} /></div>
           <div className="adm-toggles">

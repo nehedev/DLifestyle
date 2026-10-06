@@ -251,3 +251,12 @@ body{padding-bottom:92px}
 @keyframes welcome-pop{0%{opacity:0;transform:scale(.65) translateY(24px)}70%{transform:scale(1.03) translateY(0)}100%{opacity:1;transform:none}}
 @keyframes welcome-spin{0%{opacity:0;transform:rotate(-30deg) scale(.4)}100%{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.welcome-overlay,.welcome-card,.welcome-mark{animation:none}}
+
+/* ─── Image upload area ────────────────────────────────────────────────────── */
+.adm-upload-area{margin-top:6px}
+.adm-upload-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:2px dashed var(--line);border-radius:12px;padding:28px 16px;cursor:pointer;font:600 14px Figtree;color:var(--mut);transition:border-color .15s,background .15s}
+.adm-upload-btn:hover{border-color:var(--green);background:var(--cream-2);color:var(--green)}
+.adm-upload-btn iconify-icon{font-size:28px}
+.adm-upload-preview{position:relative;display:inline-block}
+.adm-upload-remove{position:absolute;top:6px;right:6px;display:flex;align-items:center;gap:4px;background:#0009;color:#fff;border:0;border-radius:999px;padding:4px 10px;font:600 12px Figtree;cursor:pointer}
+.adm-upload-remove:hover{background:#000c}
