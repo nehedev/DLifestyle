@@ -3,7 +3,7 @@ import * as Linking from 'expo-linking'
 import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { AppAuth } from './src/auth'
-import { CartProvider } from './src/cart'
+import { CatalogProvider, CartProvider } from './src/store'
 import { navigationRef, RootNavigator, type RootStackParamList } from './src/navigation'
 
 const linking: LinkingOptions<RootStackParamList> = {
@@ -27,12 +27,14 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AppAuth>
-        <CartProvider>
-          <NavigationContainer ref={navigationRef} linking={linking}>
-            <StatusBar style="dark" />
-            <RootNavigator />
-          </NavigationContainer>
-        </CartProvider>
+        <CatalogProvider>
+          <CartProvider>
+            <NavigationContainer ref={navigationRef} linking={linking}>
+              <StatusBar style="dark" />
+              <RootNavigator />
+            </NavigationContainer>
+          </CartProvider>
+        </CatalogProvider>
       </AppAuth>
     </SafeAreaProvider>
   )

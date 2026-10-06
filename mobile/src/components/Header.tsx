@@ -11,8 +11,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { useAdmin, useSession } from '../auth'
-import { useCart } from '../cart'
+import { useSession } from '../auth'
+import { useCart } from '../store'
 import { C } from '../theme'
 import type { RootStackParamList } from '../navigation'
 
@@ -21,7 +21,6 @@ export function Header() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
   const { count } = useCart()
   const { isAuthenticated, isLoading, name, picture, login, logout } = useSession()
-  const { isAdmin } = useAdmin()
   const [menuOpen, setMenuOpen] = useState(false)
 
   // Close the account menu if the user signs out while it's open.
@@ -107,25 +106,6 @@ export function Header() {
                 {name ?? 'Account'}
               </Text>
             </View>
-
-            {isAdmin && (
-              <Pressable
-                style={styles.menuItem}
-                onPress={() => {
-                  setMenuOpen(false)
-                  nav.navigate('Admin')
-                }}
-              >
-                <MaterialCommunityIcons
-                  name="shield-crown-outline"
-                  size={18}
-                  color={C.gold}
-                />
-                <Text style={[styles.menuItemTxt, { color: C.green }]}>
-                  Admin console
-                </Text>
-              </Pressable>
-            )}
 
             <Pressable
               style={styles.menuItem}

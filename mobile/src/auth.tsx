@@ -18,8 +18,7 @@ import {
   Text,
   View,
 } from 'react-native'
-import { ApiError, getMe, googleSignIn, setAccessTokenGetter } from './api'
-import type { MeResponse } from './api'
+import { ApiError, googleSignIn, setAccessTokenGetter } from './api'
 import { C } from './theme'
 
 WebBrowser.maybeCompleteAuthSession()
@@ -100,28 +99,6 @@ async function loadSession() {
 
 async function clearSession() {
   await AsyncStorage.multiRemove([TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
-}
-
-// ─── /me caching ─────────────────────────────────────────────────────────────
-//
-// Header and admin screens both call useAdmin() which fetches /me. Cache the
-// in-flight promise so a fresh mount only triggers one request. Invalidate on
-// logout and after the user changes their role.
-
-let mePromise: Promise<MeResponse> | null = null
-
-function getMeOnce(): Promise<MeResponse> {
-  if (!mePromise) {
-    mePromise = getMe().catch((e) => {
-      mePromise = null
-      throw e
-    })
-  }
-  return mePromise
-}
-
-export function invalidateMeCache() {
-  mePromise = null
 }
 
 // ─── Welcome overlay ─────────────────────────────────────────────────────────
@@ -214,8 +191,6 @@ function GoogleSession({ children }: { children: ReactNode }) {
         session.user.first_name,
         session.picture ?? undefined,
       )
-      // Fresh session — discard any cached /me so the next read hits the API.
-      invalidateMeCache()
       setName(session.user.first_name)
       setPicture(session.picture ?? undefined)
       setToken(session.id_token)
@@ -250,7 +225,6 @@ function GoogleSession({ children }: { children: ReactNode }) {
   }, [promptAsync])
 
   const logout = useCallback(() => {
-    invalidateMeCache()
     void clearSession()
     setToken(null)
     setName(undefined)
@@ -308,45 +282,7 @@ export function AppAuth({ children }: { children: ReactNode }) {
   return <GoogleSession>{children}</GoogleSession>
 }
 
-// ─── Admin hook ──────────────────────────────────────────────────────────────
-
-export function useAdmin(): {
-  isAdmin: boolean
-  me: MeResponse | null
-  loading: boolean
-} {
-  const { isAuthenticated, isLoading, ready } = useSession()
-  const [me, setMe] = useState<MeResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    if (!ready || !isAuthenticated) {
-      setMe(null)
-      return
-    }
-    let cancelled = false
-    setLoading(true)
-    getMeOnce()
-      .then((data) => {
-        if (!cancelled) setMe(data)
-      })
-      .catch(() => {
-        if (!cancelled) setMe(null)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [ready, isAuthenticated])
-
-  return {
-    isAdmin: me?.role === 'admin',
-    me,
-    loading: isLoading || !ready || loading,
-  }
-}
+// ─── Welcome overlay styles ──────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   welcomeOverlay: {

@@ -108,6 +108,17 @@ export interface GoogleSignInResponse {
   user: MeResponse
 }
 
+export interface CartLinePayload {
+  kind: 'food' | 'service'
+  menu_item_id: number | null
+  service_id: number | null
+  quantity: number
+  preferred_date: string | null
+}
+
+export interface CartPage {
+  items: CartLinePayload[]
+}
 
 export class ApiError extends Error {
   status: number
@@ -170,6 +181,16 @@ export const googleSignIn = (
     body: JSON.stringify({ code, redirect_uri: redirectUri }),
   })
 
+/** Loads the signed-in user's cart. */
+export const getCart = (): Promise<CartPage> => request<CartPage>('/api/v1/cart')
+
+/** Replaces the signed-in user's cart with the given snapshot. */
+export const putCart = (items: CartLinePayload[]): Promise<CartPage> =>
+  request<CartPage>('/api/v1/cart', {
+    method: 'PUT',
+    body: JSON.stringify({ items }),
+  })
+
 
 export const createOrder = (
   payload: CreateOrderPayload,
@@ -216,238 +237,3 @@ export const cancelServiceRequest = (requestId: number): Promise<ServiceRequestR
     method: 'POST',
   })
 
-  // ─── Admin interfaces ───────────────────────────────────────────────────────
-
-export interface MenuItemAdmin extends MenuItem {
-  is_active: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface MenuItemCreate {
-  name: string
-  description?: string | null
-  category: string
-  image_url?: string | null
-  image_alt?: string | null
-  price_minor: number
-  weekdays: number[]
-  is_active?: boolean
-  is_sold_out?: boolean
-}
-
-export type MenuItemPatch = Partial<MenuItemCreate>
-
-export interface ServiceAdmin {
-  id: number
-  name: string
-  description: string
-  is_active: boolean
-  sort_order: number
-  created_at: string
-  updated_at: string
-}
-
-export interface ServiceCreate {
-  name: string
-  description: string
-  is_active?: boolean
-  sort_order?: number | null
-}
-
-export type ServicePatch = Partial<ServiceCreate>
-
-export interface AdminOrderListItem {
-  id: number
-  user_id: number
-  status: string
-  fulfillment_type: string
-  fulfillment_date: string
-  total_minor: number
-  currency: string
-  created_at: string
-}
-
-export interface AdminOrderItemResponse {
-  id: number
-  menu_item_id: number
-  name: string
-  quantity: number
-  unit_price_minor: number
-}
-
-export interface AdminPaymentResponse {
-  id: number
-  reference: string
-  provider_transaction_id: string | null
-  status: string
-  amount_minor: number
-  currency: string
-}
-
-export interface AdminOrderDetail extends AdminOrderListItem {
-  contact: Contact
-  notes: string | null
-  items_total_minor: number
-  delivery_fee_minor: number
-  updated_at: string
-  items: AdminOrderItemResponse[]
-  payments: AdminPaymentResponse[]
-}
-
-export interface AdminPaymentListItem extends AdminPaymentResponse {
-  order_id: number
-  created_at: string
-}
-
-export interface ServiceRequestAdminResponse extends ServiceRequestResponse {
-  user_id: number
-}
-
-export interface UserAdminResponse {
-  id: number
-  email: string
-  first_name: string
-  last_name: string | null
-  role: string
-  created_at: string
-}
-
-export interface UploadSignResponse {
-  cloud_name: string
-  api_key: string
-  timestamp: number
-  folder: string
-  upload_url: string
-  signature: string
-}
-
-export interface CursorPage<T> {
-  items: T[]
-  next_cursor: string | null
-}
-
-// ─── Admin API functions ────────────────────────────────────────────────────
-
-export const adminListMenuItems = (
-  cursor?: string | null,
-): Promise<CursorPage<MenuItemAdmin>> =>
-  request<CursorPage<MenuItemAdmin>>(
-    `/api/v1/sudo/menu-items${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
-  )
-
-export const adminCreateMenuItem = (body: MenuItemCreate): Promise<MenuItemAdmin> =>
-  request<MenuItemAdmin>('/api/v1/sudo/menu-items', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-
-export const adminPatchMenuItem = (id: number, body: MenuItemPatch): Promise<MenuItemAdmin> =>
-  request<MenuItemAdmin>(`/api/v1/sudo/menu-items/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  })
-
-export const adminListServices = (
-  cursor?: string | null,
-): Promise<CursorPage<ServiceAdmin>> =>
-  request<CursorPage<ServiceAdmin>>(
-    `/api/v1/sudo/services${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
-  )
-
-export const adminCreateService = (body: ServiceCreate): Promise<ServiceAdmin> =>
-  request<ServiceAdmin>('/api/v1/sudo/services', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-
-export const adminPatchService = (id: number, body: ServicePatch): Promise<ServiceAdmin> =>
-  request<ServiceAdmin>(`/api/v1/sudo/services/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  })
-
-export const adminListOrders = (
-  params: { status?: string; cursor?: string | null } = {},
-): Promise<CursorPage<AdminOrderListItem>> => {
-  const qs = new URLSearchParams()
-  if (params.status) qs.set('status', params.status)
-  if (params.cursor) qs.set('cursor', params.cursor)
-  const q = qs.toString()
-  return request<CursorPage<AdminOrderListItem>>(`/api/v1/sudo/orders${q ? `?${q}` : ''}`)
-}
-
-export const adminGetOrder = (id: number): Promise<AdminOrderDetail> =>
-  request<AdminOrderDetail>(`/api/v1/sudo/orders/${id}`)
-
-export const adminSetOrderStatus = (
-  id: number,
-  status: 'preparing' | 'ready' | 'completed' | 'cancelled',
-): Promise<AdminOrderDetail> =>
-  request<AdminOrderDetail>(`/api/v1/sudo/orders/${id}/status`, {
-    method: 'POST',
-    body: JSON.stringify({ status }),
-  })
-
-export const adminListPayments = (
-  params: { status?: string; cursor?: string | null } = {},
-): Promise<CursorPage<AdminPaymentListItem>> => {
-  const qs = new URLSearchParams()
-  if (params.status) qs.set('status', params.status)
-  if (params.cursor) qs.set('cursor', params.cursor)
-  const q = qs.toString()
-  return request<CursorPage<AdminPaymentListItem>>(`/api/v1/sudo/payments${q ? `?${q}` : ''}`)
-}
-
-export const adminListServiceRequests = (
-  params: { status?: string; cursor?: string | null } = {},
-): Promise<CursorPage<ServiceRequestAdminResponse>> => {
-  const qs = new URLSearchParams()
-  if (params.status) qs.set('status', params.status)
-  if (params.cursor) qs.set('cursor', params.cursor)
-  const q = qs.toString()
-  return request<CursorPage<ServiceRequestAdminResponse>>(
-    `/api/v1/sudo/service-requests${q ? `?${q}` : ''}`,
-  )
-}
-
-export const adminPatchServiceRequest = (
-  id: number,
-  body: { status?: string; quoted_amount_minor?: number | null; owner_note?: string | null },
-): Promise<ServiceRequestAdminResponse> =>
-  request<ServiceRequestAdminResponse>(`/api/v1/sudo/service-requests/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(body),
-  })
-
-export const adminGetStoreSettings = (): Promise<StoreInfo> =>
-  request<StoreInfo>('/api/v1/sudo/store-settings')
-
-export const adminPutStoreSettings = (body: {
-  delivery_fee_minor: number
-  order_cutoff_time: string
-  max_advance_days: number
-}): Promise<StoreInfo> =>
-  request<StoreInfo>('/api/v1/sudo/store-settings', {
-    method: 'PUT',
-    body: JSON.stringify(body),
-  })
-
-export const adminListUsers = (
-  cursor?: string | null,
-): Promise<CursorPage<UserAdminResponse>> =>
-  request<CursorPage<UserAdminResponse>>(
-    `/api/v1/sudo/users${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
-  )
-
-export const adminSetUserRole = (
-  id: number,
-  role: 'user' | 'admin',
-): Promise<UserAdminResponse> =>
-  request<UserAdminResponse>(`/api/v1/sudo/users/${id}/role`, {
-    method: 'PATCH',
-    body: JSON.stringify({ role }),
-  })
-
-export const adminSignUpload = (): Promise<UploadSignResponse> =>
-  request<UploadSignResponse>('/api/v1/sudo/uploads/sign', { method: 'POST' })

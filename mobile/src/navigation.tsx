@@ -2,46 +2,25 @@ import { MaterialCommunityIcons } from '@expo/vector-icons'
 import { createNavigationContainerRef } from '@react-navigation/native'
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
-import { useCart } from './cart'
+import { useCart } from './store'
 import { C } from './theme'
 
-import HomeScreen from '../screens/HomeScreen'
-import MenuScreen from '../screens/MenuScreen'
-import CartScreen from '../screens/CartScreen'
-import RequestsScreen from '../screens/RequestsScreen'
-import ItemDetailScreen from '../screens/ItemDetailScreen'
-import CheckoutScreen from '../screens/CheckoutScreen'
-import ConfirmationScreen from '../screens/ConfirmationScreen'
-import PaymentCallbackScreen from '../screens/PaymentCallbackScreen'
+import HomeScreen from './screens/HomeScreen'
+import MenuScreen from './screens/MenuScreen'
+import CartScreen from './screens/CartScreen'
+import RequestsScreen from './screens/RequestsScreen'
+import ItemDetailScreen from './screens/ItemDetailScreen'
+import CheckoutScreen from './screens/CheckoutScreen'
+import PaymentCallbackScreen from './screens/PaymentCallbackScreen'
 
-import AdminHomeScreen from '../screens/admin/AdminHomeScreen'
-import AdminMenuScreen from '../screens/admin/AdminMenuScreen'
-import AdminServicesScreen from '../screens/admin/AdminServicesScreen'
-import AdminOrdersScreen from '../screens/admin/AdminOrdersScreen'
-import AdminPaymentsScreen from '../screens/admin/AdminPaymentsScreen'
-import AdminServiceRequestsScreen from '../screens/admin/AdminServiceRequestsScreen'
-import AdminStoreScreen from '../screens/admin/AdminStoreScreen'
-import AdminUsersScreen from '../screens/admin/AdminUsersScreen'
-
-import type { CatalogItem, OrderResponse } from './types'
+import type { CatalogItem } from './types'
 
 export type RootStackParamList = {
   Tabs: undefined
   ItemDetail: { item: CatalogItem }
   Checkout: undefined
-  Confirmation: { order: OrderResponse }
   PaymentCallback: { orderId?: number } | undefined
-  Admin: undefined
-  AdminMenu: undefined
-  AdminServices: undefined
-  AdminOrders: undefined
-  AdminPayments: undefined
-  AdminServiceRequests: undefined
-  AdminStore: undefined
-  AdminUsers: undefined
 }
-
-export type AdminStackParamList = RootStackParamList
 
 export type TabParamList = {
   Home: undefined
@@ -123,46 +102,9 @@ export function RootNavigator() {
       <Stack.Screen name="ItemDetail" component={ItemDetailScreen} options={{ title: '' }} />
       <Stack.Screen name="Checkout" component={CheckoutScreen} options={{ title: 'Checkout' }} />
       <Stack.Screen
-        name="Confirmation"
-        component={ConfirmationScreen}
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
         name="PaymentCallback"
         component={PaymentCallbackScreen}
         options={{ headerShown: false, gestureEnabled: false }}
-      />
-      <Stack.Screen name="Admin" component={AdminHomeScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="AdminMenu" component={AdminMenuScreen} options={{ headerShown: false }} />
-      <Stack.Screen
-        name="AdminServices"
-        component={AdminServicesScreen}
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="AdminOrders"
-        component={AdminOrdersScreen}
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="AdminPayments"
-        component={AdminPaymentsScreen}
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="AdminServiceRequests"
-        component={AdminServiceRequestsScreen}
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="AdminStore"
-        component={AdminStoreScreen}
-        options={{ headerShown: false }}
-      />
-      <Stack.Screen
-        name="AdminUsers"
-        component={AdminUsersScreen}
-        options={{ headerShown: false }}
       />
     </Stack.Navigator>
   )

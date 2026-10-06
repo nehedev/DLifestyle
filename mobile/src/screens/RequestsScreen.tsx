@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -10,6 +11,8 @@ import {
 import { useFocusEffect, useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import {
+  cancelOrder,
+  cancelServiceRequest,
   listOrders,
   listServiceRequests,
   naira,
@@ -21,6 +24,9 @@ import { useSession } from '../auth'
 import { C } from '../theme'
 import type { RootStackParamList } from '../navigation'
 
+const CANCELLABLE_ORDER = 'pending'
+const CANCELLABLE_REQUEST = ['requested', 'contacted']
+
 type Row =
   | { kind: 'order'; data: OrderResponse }
   | { kind: 'service'; data: ServiceRequestResponse }
@@ -30,6 +36,7 @@ export default function RequestsScreen() {
   const { isAuthenticated, login, ready, name } = useSession()
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -43,6 +50,9 @@ export default function RequestsScreen() {
         ...services.items.map((d) => ({ kind: 'service' as const, data: d })),
       ].sort((a, b) => (b.data.created_at ?? '').localeCompare(a.data.created_at ?? ''))
       setRows(merged)
+      setError('')
+    } catch {
+      setError('We could not load your orders and requests.')
     } finally {
       setLoading(false)
     }
@@ -52,6 +62,24 @@ export default function RequestsScreen() {
     useCallback(() => {
       if (ready && isAuthenticated) void load()
     }, [ready, isAuthenticated, load]),
+  )
+
+  const runCancel = useCallback(
+    (action: () => Promise<unknown>, message: string) => {
+      Alert.alert('Cancel this?', message, [
+        { text: 'Keep', style: 'cancel' },
+        {
+          text: 'Cancel it',
+          style: 'destructive',
+          onPress: () => {
+            void action()
+              .then(load)
+              .catch(() => setError(message))
+          },
+        },
+      ])
+    },
+    [load],
   )
 
   if (!ready) {
@@ -89,6 +117,7 @@ export default function RequestsScreen() {
           <View style={{ padding: 20 }}>
             <Text style={styles.h2}>Hi{name ? `, ${name}` : ''}</Text>
             <Text style={styles.sub}>Your recent orders and service requests.</Text>
+            {error ? <Text style={styles.err}>{error}</Text> : null}
             {loading && <ActivityIndicator color={C.green} style={{ marginTop: 20 }} />}
           </View>
         }
@@ -105,6 +134,18 @@ export default function RequestsScreen() {
                   {o.fulfillment_type} · {o.fulfillment_date}
                 </Text>
                 <Text style={styles.cardTotal}>{naira(o.total_minor)}</Text>
+                {o.status === CANCELLABLE_ORDER && (
+                  <Pressable
+                    onPress={() =>
+                      runCancel(
+                        () => cancelOrder(o.id),
+                        'That order can no longer be cancelled.',
+                      )
+                    }
+                  >
+                    <Text style={styles.cancel}>Cancel order</Text>
+                  </Pressable>
+                )}
               </View>
             )
           }
@@ -116,17 +157,38 @@ export default function RequestsScreen() {
                 <Text style={[styles.badge, badgeColor(s.status)]}>{s.status}</Text>
               </View>
               <Text style={styles.cardMeta}>{s.location}</Text>
+              {s.preferred_date ? (
+                <Text style={styles.cardMeta}>Preferred: {s.preferred_date}</Text>
+              ) : null}
               {s.quoted_amount_minor != null && (
                 <Text style={styles.cardTotal}>Quote: {naira(s.quoted_amount_minor)}</Text>
+              )}
+              {CANCELLABLE_REQUEST.includes(s.status) && (
+                <Pressable
+                  onPress={() =>
+                    runCancel(
+                      () => cancelServiceRequest(s.id),
+                      'That request can no longer be cancelled.',
+                    )
+                  }
+                >
+                  <Text style={styles.cancel}>Cancel request</Text>
+                </Pressable>
               )}
             </View>
           )
         }}
         ListEmptyComponent={
           !loading ? (
-            <Text style={{ textAlign: 'center', color: C.mut, padding: 40 }}>
-              No activity yet.
-            </Text>
+            <View style={{ alignItems: 'center', padding: 30 }}>
+              <Text style={{ color: C.mut, marginBottom: 12 }}>No activity yet.</Text>
+              <Pressable
+                style={styles.btn}
+                onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}
+              >
+                <Text style={styles.btnTxt}>Order something</Text>
+              </Pressable>
+            </View>
           ) : null
         }
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }}
@@ -146,6 +208,7 @@ const badgeColor = (status: string) => {
 const styles = StyleSheet.create({
   h2: { fontSize: 26, fontWeight: '800', color: C.green },
   sub: { color: C.mut, marginTop: 4, marginBottom: 16 },
+  err: { color: C.burg, marginBottom: 8 },
   card: {
     backgroundColor: '#fff', borderRadius: 14, padding: 16, marginBottom: 10,
     borderWidth: 1, borderColor: C.line,
@@ -158,6 +221,9 @@ const styles = StyleSheet.create({
   },
   cardMeta: { color: C.mut, marginTop: 6, fontSize: 13 },
   cardTotal: { fontWeight: '800', color: C.green, marginTop: 6, fontSize: 16 },
+  cancel: {
+    color: C.burg, fontWeight: '600', marginTop: 10, textDecorationLine: 'underline',
+  },
   gate: {
     flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 30,
   },

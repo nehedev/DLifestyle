@@ -1,7 +1,5 @@
-import { useEffect, useState } from 'react'
 import {
   ActivityIndicator,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,62 +8,20 @@ import {
 } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { getMenu, getServices, naira, type MenuItem, type Service } from '../api'
+import { naira } from '../api'
 import { Header } from '../components/Header'
 import { Plate } from '../components/Plate'
-import { useCart } from '../cart'
+import { useCart, useCatalog } from '../store'
 import { C, S } from '../theme'
-import { foodKey, serviceKey, type CatalogItem, type Kind } from '../types'
 import type { RootStackParamList } from '../navigation'
-
-const toItem = (kind: Kind, x: MenuItem | Service): CatalogItem => {
-  if (kind === 'food') {
-    const m = x as MenuItem
-    return {
-      kind,
-      id: m.id,
-      key: foodKey(m.id),
-      name: m.name,
-      desc: m.description ?? '',
-      price_minor: m.price_minor,
-      category: m.category,
-      image_url: m.image_url,
-      image_alt: m.image_alt,
-      sold_out: m.is_sold_out,
-      weekdays: m.weekdays,
-    }
-  }
-  const s = x as Service
-  return {
-    kind,
-    id: s.id,
-    key: serviceKey(s.id),
-    name: s.name,
-    desc: s.description,
-    price_minor: null,
-    category: 'Services',
-    image_url: null,
-    image_alt: null,
-    sold_out: false,
-    weekdays: [0, 1, 2, 3, 4, 5, 6],
-  }
-}
 
 export default function HomeScreen() {
   const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
   const { add } = useCart()
-  const [menu, setMenu] = useState<MenuItem[]>([])
-  const [services, setServices] = useState<Service[]>([])
-  const [loading, setLoading] = useState(true)
+  const { items, loading, error, reload } = useCatalog()
 
-  useEffect(() => {
-    Promise.all([getMenu(), getServices()])
-      .then(([m, s]) => { setMenu(m); setServices(s) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
-
-  const featured = menu.slice(0, 4)
+  const featured = items.filter((i) => i.kind === 'food').slice(0, 4)
+  const services = items.filter((i) => i.kind === 'service').slice(0, 4)
 
   return (
     <View style={{ flex: 1, backgroundColor: C.cream }}>
@@ -98,62 +54,66 @@ export default function HomeScreen() {
 
         {loading ? (
           <ActivityIndicator color={C.green} style={{ marginTop: 32 }} />
+        ) : error ? (
+          <View style={styles.sec}>
+            <Text style={styles.errorTxt}>{error}</Text>
+            <Pressable style={styles.btnGold} onPress={reload}>
+              <Text style={styles.btnGoldTxt}>Try again</Text>
+            </Pressable>
+          </View>
         ) : (
           <>
             <View style={styles.sec}>
               <Text style={styles.h2}>Popular today</Text>
               <View style={styles.grid}>
-                {featured.map((m) => {
-                  const it = toItem('food', m)
-                  return (
-                    <Pressable
-                      key={m.id}
-                      style={styles.card}
-                      onPress={() => nav.navigate('ItemDetail', { item: it })}
-                    >
-                      <Plate item={it} />
-                      <View style={styles.cardBody}>
-                        <Text style={styles.cardTag}>{m.category}</Text>
-                        <Text style={styles.cardTitle}>{m.name}</Text>
-                        {m.description && (
-                          <Text style={styles.cardDesc} numberOfLines={2}>
-                            {m.description}
+                {featured.map((it) => (
+                  <Pressable
+                    key={it.key}
+                    style={styles.card}
+                    onPress={() => nav.navigate('ItemDetail', { item: it })}
+                  >
+                    <Plate item={it} />
+                    <View style={styles.cardBody}>
+                      <Text style={styles.cardTag}>{it.category}</Text>
+                      <Text style={styles.cardTitle}>{it.name}</Text>
+                      {it.desc ? (
+                        <Text style={styles.cardDesc} numberOfLines={2}>
+                          {it.desc}
+                        </Text>
+                      ) : null}
+                      <View style={styles.cardFoot}>
+                        <Text style={styles.price}>{naira(it.price_minor ?? 0)}</Text>
+                        <Pressable
+                          style={styles.addBtn}
+                          onPress={() => add(it)}
+                          disabled={it.sold_out}
+                        >
+                          <Text style={styles.addBtnTxt}>
+                            {it.sold_out ? 'Sold out' : 'Add'}
                           </Text>
-                        )}
-                        <View style={styles.cardFoot}>
-                          <Text style={styles.price}>{naira(m.price_minor)}</Text>
-                          <Pressable
-                            style={styles.addBtn}
-                            onPress={() => add(it)}
-                            disabled={m.is_sold_out}
-                          >
-                            <Text style={styles.addBtnTxt}>
-                              {m.is_sold_out ? 'Sold out' : 'Add'}
-                            </Text>
-                          </Pressable>
-                        </View>
+                        </Pressable>
                       </View>
-                    </Pressable>
-                  )
-                })}
+                    </View>
+                  </Pressable>
+                ))}
               </View>
             </View>
 
             <View style={styles.darkSec}>
               <Text style={styles.darkH2}>Services we offer</Text>
               <Text style={styles.darkP}>Book a pro — we'll reach out with a quote.</Text>
-              {services.slice(0, 4).map((s) => (
+              {services.map((s) => (
                 <Pressable
-                  key={s.id}
+                  key={s.key}
                   style={styles.svcRow}
-                  onPress={() => nav.navigate('ItemDetail', { item: toItem('service', s) })}
+                  onPress={() => nav.navigate('ItemDetail', { item: s })}
                 >
                   <View style={styles.svcIcon}>
                     <Text style={{ fontSize: 24 }}>✨</Text>
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.svcTitle}>{s.name}</Text>
-                    <Text style={styles.svcDesc} numberOfLines={2}>{s.description}</Text>
+                    <Text style={styles.svcDesc} numberOfLines={2}>{s.desc}</Text>
                   </View>
                 </Pressable>
               ))}
@@ -197,6 +157,7 @@ const styles = StyleSheet.create({
   },
   btnGhostTxt: { color: '#fff', fontWeight: '700', fontSize: 15 },
   sec: { padding: 20 },
+  errorTxt: { color: C.burg, marginBottom: 12 },
   h2: { fontSize: 26, fontWeight: '800', color: C.green, marginBottom: 18 },
   grid: { gap: 14 },
   card: {

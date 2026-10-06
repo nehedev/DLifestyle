@@ -15,7 +15,7 @@ import { getOrder, naira, type OrderResponse } from '../api'
 import { C } from '../theme'
 import type { RootStackParamList } from '../navigation'
 
-const PENDING_ORDER_KEY = 'damis.pending_payment_order'
+const LAST_ORDER_KEY = 'damis.lastOrderId'
 const PAID_STATES = ['paid', 'confirmed', 'completed', 'preparing', 'ready']
 const FAIL_STATES = ['cancelled', 'failed', 'payment_failed']
 
@@ -29,10 +29,10 @@ export default function PaymentCallbackScreen() {
   const [attempt, setAttempt] = useState(0)
   const attemptsRef = useRef(0)
 
-  // Resolve order id from params or persisted pending order
+  // Resolve order id from params or the persisted last order
   useEffect(() => {
     if (orderId) return
-    AsyncStorage.getItem(PENDING_ORDER_KEY).then((raw) => {
+    AsyncStorage.getItem(LAST_ORDER_KEY).then((raw) => {
       const id = raw ? Number(raw) : NaN
       if (Number.isFinite(id)) setOrderId(id)
       else setStatus('fail')
@@ -55,7 +55,7 @@ export default function PaymentCallbackScreen() {
         const s = o.status.toLowerCase()
         if (PAID_STATES.includes(s)) {
           setStatus('ok')
-          await AsyncStorage.removeItem(PENDING_ORDER_KEY)
+          await AsyncStorage.removeItem(LAST_ORDER_KEY)
           return
         }
         if (FAIL_STATES.includes(s)) {
