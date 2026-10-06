@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { getMe, setAccessTokenGetter } from './api'
+import { ApiError, getMe, googleSignIn, setAccessTokenGetter } from './api'
 import type { MeResponse } from './api'
 
 const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
@@ -21,7 +21,7 @@ export const googleConfigured = Boolean(clientId)
 export interface Session {
   isAuthenticated: boolean
   isLoading: boolean
-  name?: string      // first name from /me
+  name?: string      // first name, available after the backend verifies the token
   picture?: string   // Google profile photo URL
   login: () => void
   logout: () => void
@@ -36,68 +36,115 @@ const SessionContext = createContext<Session>({
 })
 export const useSession = () => useContext(SessionContext)
 
-// ─── Token storage ────────────────────────────────────────────────────────────
+// ─── Session storage ──────────────────────────────────────────────────────────
+//
+// The session only exists after the backend has verified the Google token and
+// provisioned the user. Until then nothing is persisted, so a failed or
+// interrupted sign-in leaves the visitor signed out.
 
 const TOKEN_KEY = 'damis.google_token'
 const EXPIRY_KEY = 'damis.google_expiry'
+const NAME_KEY = 'damis.user_name'
+const PICTURE_KEY = 'damis.user_picture'
 
-function storeToken(token: string, expiresIn: number) {
-  localStorage.setItem(TOKEN_KEY, token)
-  localStorage.setItem(EXPIRY_KEY, String(Date.now() + expiresIn * 1000))
+function persistSession(idToken: string, expiresAt: number, name?: string, picture?: string) {
+  localStorage.setItem(TOKEN_KEY, idToken)
+  localStorage.setItem(EXPIRY_KEY, String(expiresAt * 1000))
+  if (name) localStorage.setItem(NAME_KEY, name)
+  else localStorage.removeItem(NAME_KEY)
+  if (picture) localStorage.setItem(PICTURE_KEY, picture)
+  else localStorage.removeItem(PICTURE_KEY)
 }
 
-function loadToken(): string | null {
+function loadSession(): { token: string; name?: string; picture?: string } | null {
   const token = localStorage.getItem(TOKEN_KEY)
   const expiry = Number(localStorage.getItem(EXPIRY_KEY) ?? 0)
   if (!token || Date.now() > expiry - 60_000) return null
-  return token
+  return {
+    token,
+    name: localStorage.getItem(NAME_KEY) ?? undefined,
+    picture: localStorage.getItem(PICTURE_KEY) ?? undefined,
+  }
 }
 
-function clearToken() {
+function clearSession() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(EXPIRY_KEY)
+  localStorage.removeItem(NAME_KEY)
+  localStorage.removeItem(PICTURE_KEY)
+}
+
+// ─── Welcome animation ────────────────────────────────────────────────────────
+
+function WelcomeOverlay({ name, onDone }: { name: string; onDone: () => void }) {
+  useEffect(() => {
+    const timer = setTimeout(onDone, 2800)
+    return () => clearTimeout(timer)
+  }, [onDone])
+
+  return (
+    <div className="welcome-overlay" role="status" aria-live="polite">
+      <div className="welcome-card">
+        <span className="welcome-mark">
+          <iconify-icon icon="lucide:party-popper" />
+        </span>
+        <p className="welcome-hi">Welcome</p>
+        <p className="welcome-name">{name}</p>
+      </div>
+    </div>
+  )
 }
 
 // ─── Inner session component (must be inside GoogleOAuthProvider) ─────────────
 
 function GoogleSession({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState<string | null>(loadToken)
-  const [name, setName] = useState<string | undefined>()
-  const [picture, setPicture] = useState<string | undefined>()
+  const [initial] = useState(loadSession)
+  const [token, setToken] = useState<string | null>(initial?.token ?? null)
+  const [name, setName] = useState<string | undefined>(initial?.name)
+  const [picture, setPicture] = useState<string | undefined>(initial?.picture)
   const [error, setError] = useState<string | undefined>()
   const [isLoading, setIsLoading] = useState(false)
+  const [welcome, setWelcome] = useState<string | null>(null)
   const tokenRef = useRef(token)
   tokenRef.current = token
 
-  // Wire the access token into the API client
+  // Wire the verified ID token into the API client
   useEffect(() => {
     setAccessTokenGetter(async () => tokenRef.current ?? undefined)
     return () => setAccessTokenGetter(async () => undefined)
   }, [])
 
-  // Fetch name from /me and profile picture from Google userinfo on sign-in
-  useEffect(() => {
-    if (!token) { setName(undefined); setPicture(undefined); return }
-    getMe()
-      .then(me => setName(me.first_name))
-      .catch(() => undefined)
-    fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.json())
-      .then((data: { picture?: string }) => { if (data.picture) setPicture(data.picture) })
-      .catch(() => undefined)
-  }, [token])
-
-  const handleSuccess = useCallback((response: { access_token: string; expires_in: number }) => {
-    storeToken(response.access_token, response.expires_in)
-    setToken(response.access_token)
+  // The Google code is useless on its own: it must be verified by the backend
+  // before a session can be created.
+  const handleCode = useCallback(async (code: string) => {
+    setIsLoading(true)
     setError(undefined)
-    setIsLoading(false)
+    try {
+      const session = await googleSignIn(code)
+      persistSession(
+        session.id_token,
+        session.expires_at,
+        session.user.first_name,
+        session.picture ?? undefined,
+      )
+      setName(session.user.first_name)
+      setPicture(session.picture ?? undefined)
+      setToken(session.id_token)
+      setWelcome(session.user.first_name)
+    } catch (err) {
+      const message =
+        err instanceof ApiError && err.status === 409
+          ? 'An account already exists for that email. Please sign in with your original method.'
+          : 'We could not verify your Google sign-in. Please try again.'
+      setError(message)
+    } finally {
+      setIsLoading(false)
+    }
   }, [])
 
   const googleLogin = useGoogleLogin({
-    onSuccess: handleSuccess,
+    flow: 'auth-code',
+    onSuccess: (response) => { void handleCode(response.code) },
     onError: () => {
       setError('Google sign-in failed. Please try again.')
       setIsLoading(false)
@@ -114,19 +161,27 @@ function GoogleSession({ children }: { children: ReactNode }) {
   }, [googleLogin])
 
   const logout = useCallback(() => {
-    clearToken()
+    clearSession()
     setToken(null)
     setName(undefined)
     setPicture(undefined)
     setError(undefined)
+    setWelcome(null)
   }, [])
+
+  const dismissWelcome = useCallback(() => setWelcome(null), [])
 
   const value = useMemo<Session>(
     () => ({ isAuthenticated: Boolean(token), isLoading, name, picture, login, logout, error }),
     [token, isLoading, name, picture, login, logout, error],
   )
 
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
+  return (
+    <SessionContext.Provider value={value}>
+      {children}
+      {welcome && <WelcomeOverlay name={welcome} onDone={dismissWelcome} />}
+    </SessionContext.Provider>
+  )
 }
 
 // ─── Unconfigured fallback ────────────────────────────────────────────────────

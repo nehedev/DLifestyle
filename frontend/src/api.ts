@@ -97,6 +97,13 @@ export interface MeResponse {
   role: string
 }
 
+export interface GoogleSignInResponse {
+  id_token: string
+  expires_at: number
+  picture: string | null
+  user: MeResponse
+}
+
 export class ApiError extends Error {
   status: number
   detail: unknown
@@ -152,6 +159,19 @@ export const getServices = async (): Promise<Service[]> =>
 export const getStore = (): Promise<StoreInfo> => request<StoreInfo>('/api/v1/store')
 
 export const getMe = (): Promise<MeResponse> => request<MeResponse>('/api/v1/me')
+
+/**
+ * Exchanges a Google authorization code for a verified session.
+ *
+ * The backend swaps the one-time code for tokens using the client secret,
+ * verifies the Google ID token, provisions the user, and returns the ID token
+ * the client stores as its session credential.
+ */
+export const googleSignIn = (code: string): Promise<GoogleSignInResponse> =>
+  request<GoogleSignInResponse>('/api/v1/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
 
 export const createOrder = (
   payload: CreateOrderPayload,
