@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { getOrder, naira } from '../api'
 import type { OrderResponse } from '../api'
-import { A } from '../router'
 import { useSession } from '../auth'
 
-type Phase = 'processing' | 'success' | 'failed'
+type Phase = 'processing' | 'success' | 'failed' | 'timeout'
 
 const POLL_INTERVAL_MS = 3000
 const MAX_POLLS = 20 // ~60 seconds total
@@ -12,13 +11,18 @@ const MAX_POLLS = 20 // ~60 seconds total
 function phaseFromOrder(order: OrderResponse): Phase {
   if (order.status === 'cancelled') return 'failed'
   if (order.status === 'pending') return 'processing'
-  // paid, preparing, ready, completed → success
   return 'success'
+}
+
+/** Navigate to a hash route from a real-path page by replacing the whole URL. */
+function goTo(hash: string) {
+  window.location.href = `/${hash}`
 }
 
 export function PaymentCallback() {
   const { isAuthenticated, isLoading, login } = useSession()
 
+  // Read orderId once on mount — stable ref, never changes
   const orderId = useRef<number | null>(null)
   if (orderId.current === null) {
     const raw = localStorage.getItem('damis.lastOrderId')
@@ -30,11 +34,19 @@ export function PaymentCallback() {
   const [errMsg, setErrMsg] = useState('')
   const polls = useRef(0)
   const stopped = useRef(false)
+  // Track whether the token getter has been wired by the auth provider's useEffect.
+  // We delay the first poll by one tick to let the auth useEffect run first.
+  const [authReady, setAuthReady] = useState(false)
+
+  // One tick after auth state settles, mark ready so the poll effect fires
+  useEffect(() => {
+    if (isLoading) return
+    const id = setTimeout(() => setAuthReady(true), 0)
+    return () => clearTimeout(id)
+  }, [isLoading])
 
   useEffect(() => {
-    // Don't start polling until auth state is resolved
-    if (isLoading) return
-
+    if (!authReady) return
     if (!isAuthenticated) {
       setPhase('failed')
       setErrMsg('You need to be signed in to confirm your payment.')
@@ -42,7 +54,6 @@ export function PaymentCallback() {
     }
 
     const id = orderId.current
-
     if (!id) {
       setPhase('failed')
       setErrMsg('No recent order found. Check your orders page for the status.')
@@ -65,31 +76,37 @@ export function PaymentCallback() {
             polls.current += 1
             setTimeout(() => { void poll() }, POLL_INTERVAL_MS)
           } else {
-            setErrMsg(
-              'Payment is taking longer than expected. ' +
-              'Check your orders page for the final status.',
-            )
+            setPhase('timeout')
           }
         }
       } catch (e: unknown) {
         if (stopped.current) return
-        const status = (e as { status?: number }).status
-        if (status === 401) {
+        const s = (e as { status?: number }).status
+        if (s === 401 || s === 403) {
           setPhase('failed')
-          setErrMsg('Your session expired. Please sign in and check your orders.')
+          setErrMsg('Your session expired during the redirect. Sign in again to check your order.')
         } else {
           setPhase('failed')
-          setErrMsg('We could not confirm your payment. Check your orders page.')
+          setErrMsg('We could not reach the server. Check your orders page for the status.')
         }
       }
     }
 
     void poll()
     return () => { stopped.current = true }
-  }, [isAuthenticated, isLoading])
+  }, [authReady, isAuthenticated])
 
-  // Waiting for auth to settle
-  if (isLoading) {
+  const retry = () => {
+    setPhase('processing')
+    setErrMsg('')
+    setAuthReady(false)
+    polls.current = 0
+    setTimeout(() => setAuthReady(true), 0)
+  }
+
+  // ── Loading / auth settling ───────────────────────────────────────────────
+
+  if (isLoading || !authReady) {
     return (
       <div className="pcb-backdrop">
         <div className="pcb-card">
@@ -100,22 +117,23 @@ export function PaymentCallback() {
     )
   }
 
-  // Not signed in
   if (!isAuthenticated) {
     return (
       <div className="pcb-backdrop">
-        <div className="pcb-card pcb-failed">
+        <div className="pcb-card">
           <div className="pcb-icon pcb-icon-fail" aria-hidden>!</div>
           <h2>Sign in to confirm</h2>
           <p>Your payment may have gone through. Sign in to check.</p>
           <div className="pcb-actions">
             <button className="btn lg" onClick={login}>Sign in</button>
-            <A to="/menu" className="btn ghost lg">Back to menu</A>
+            <button className="btn ghost lg" onClick={() => goTo('#/menu')}>Back to menu</button>
           </div>
         </div>
       </div>
     )
   }
+
+  // ── Main states ───────────────────────────────────────────────────────────
 
   return (
     <div className="pcb-backdrop">
@@ -126,7 +144,21 @@ export function PaymentCallback() {
             <div className="pcb-spinner" aria-hidden />
             <h2>Confirming your payment…</h2>
             <p>Please wait. Do not close this page.</p>
-            {errMsg && <p className="note">{errMsg}</p>}
+          </>
+        )}
+
+        {phase === 'timeout' && (
+          <>
+            <div className="pcb-icon pcb-icon-warn" aria-hidden>⏱</div>
+            <h2>Still waiting on the bank</h2>
+            <p>
+              Payment confirmation is taking longer than expected.
+              Your order page has the latest status.
+            </p>
+            <div className="pcb-actions">
+              <button className="btn lg" onClick={retry}>Check again</button>
+              <button className="btn ghost lg" onClick={() => goTo('#/requests')}>My orders</button>
+            </div>
           </>
         )}
 
@@ -152,8 +184,8 @@ export function PaymentCallback() {
               </div>
             </div>
             <div className="pcb-actions">
-              <A to="/requests" className="btn lg">View my orders</A>
-              <A to="/menu" className="btn ghost lg">Order more</A>
+              <button className="btn lg" onClick={() => goTo('#/requests')}>View my orders</button>
+              <button className="btn ghost lg" onClick={() => goTo('#/menu')}>Order more</button>
             </div>
           </>
         )}
@@ -167,8 +199,9 @@ export function PaymentCallback() {
                 'Something went wrong. No payment was taken. You can try again from your orders page.'}
             </p>
             <div className="pcb-actions">
-              <A to="/requests" className="btn lg">My orders</A>
-              <A to="/menu" className="btn ghost lg">Back to menu</A>
+              <button className="btn lg" onClick={retry}>Try again</button>
+              <button className="btn ghost lg" onClick={() => goTo('#/requests')}>My orders</button>
+              <button className="btn ghost lg" onClick={() => goTo('#/menu')}>Back to menu</button>
             </div>
           </>
         )}

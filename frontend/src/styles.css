@@ -260,3 +260,4 @@ body{padding-bottom:92px}
 .adm-upload-preview{position:relative;display:inline-block}
 .adm-upload-remove{position:absolute;top:6px;right:6px;display:flex;align-items:center;gap:4px;background:#0009;color:#fff;border:0;border-radius:999px;padding:4px 10px;font:600 12px Figtree;cursor:pointer}
 .adm-upload-remove:hover{background:#000c}
+.pcb-icon-warn{background:var(--gold);color:var(--brown)}
