@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.api.dependencies import CurrentUser, get_admin_user
 from app.core import google
 from app.core.config import settings
-from app.core.google import GoogleTokenVerifier
+from app.core.google import GoogleCodeExchanger, GoogleTokenVerifier
 from app.db.session import get_session
 from app.main import app
 from app.models import User
@@ -44,6 +44,9 @@ class AuthTestClient:
     jwks_requests: list[httpx.Request]
     jwks_status: list[int]
     enqueued_tasks: list[tuple[str, list[Any] | None]]
+    code_exchange_requests: list[httpx.Request]
+    code_exchange_status: list[int]
+    exchanged_id_token: dict[str, str]
 
     def token(
         self,
@@ -101,6 +104,9 @@ async def auth_client(
     jwks_requests: list[httpx.Request] = []
     jwks_status = [200]
     enqueued_tasks: list[tuple[str, list[Any] | None]] = []
+    code_exchange_requests: list[httpx.Request] = []
+    code_exchange_status = [200]
+    exchanged_id_token: dict[str, str] = {}
 
     def capture_task(
         task_name: str,
@@ -123,6 +129,24 @@ async def auth_client(
     )
     monkeypatch.setattr(google, "token_verifier", verifier)
 
+    def handle_code_exchange(request: httpx.Request) -> httpx.Response:
+        code_exchange_requests.append(request)
+        if code_exchange_status[0] != 200:
+            return httpx.Response(
+                code_exchange_status[0], json={"error": "invalid_grant"}
+            )
+        return httpx.Response(
+            200, json={"id_token": exchanged_id_token.get("id_token", "")}
+        )
+
+    exchanger = GoogleCodeExchanger(
+        client_id=settings.google_client_id,
+        client_secret="test-client-secret",
+        timeout_seconds=settings.google_token_timeout_seconds,
+        transport=httpx.MockTransport(handle_code_exchange),
+    )
+    monkeypatch.setattr(google, "code_exchanger", exchanger)
+
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
     async def override_get_session() -> AsyncIterator[AsyncSession]:
@@ -141,6 +165,9 @@ async def auth_client(
                 jwks_requests,
                 jwks_status,
                 enqueued_tasks,
+                code_exchange_requests,
+                code_exchange_status,
+                exchanged_id_token,
             )
     finally:
         app.dependency_overrides.pop(get_session, None)
@@ -226,6 +253,128 @@ async def test_me_provisions_and_syncs_user(
     }
     assert len(auth_client.jwks_requests) == 1
     assert len(auth_client.enqueued_tasks) == 1
+
+
+async def test_google_sign_in_exchanges_code_and_provisions_user(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    id_token = auth_client.token({"picture": "https://example.com/alice.png"})
+    auth_client.exchanged_id_token["id_token"] = id_token
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "one-time-code"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id_token"] == id_token
+    assert body["picture"] == "https://example.com/alice.png"
+    assert body["expires_at"] > 0
+    assert body["user"]["email"] == "alice@example.com"
+    assert body["user"]["first_name"] == "Alice"
+    assert body["user"]["last_name"] == "Lovelace"
+    assert body["user"]["role"] == "user"
+    assert await _user_count(test_engine) == 1
+    assert auth_client.enqueued_tasks == [("send_welcome_email", [body["user"]["id"]])]
+
+    request = auth_client.code_exchange_requests[0]
+    assert request.url == httpx.URL("https://oauth2.googleapis.com/token")
+    form = dict(httpx.QueryParams(request.content.decode("utf-8")))
+    assert form["code"] == "one-time-code"
+    assert form["client_id"] == settings.google_client_id
+    assert form["client_secret"] == "test-client-secret"
+    assert form["redirect_uri"] == "postmessage"
+    assert form["grant_type"] == "authorization_code"
+
+
+async def test_google_sign_in_rejects_an_invalid_code(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    auth_client.code_exchange_status[0] = 400
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "bad-code"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_authorization_code"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_reports_google_outages(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    auth_client.code_exchange_status[0] = 503
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "code"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "auth_provider_unavailable"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_rejects_a_missing_id_token(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    auth_client.exchanged_id_token["id_token"] = ""
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "code"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_authorization_code"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_rejects_an_id_token_with_a_bad_audience(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    auth_client.exchanged_id_token["id_token"] = auth_client.token(
+        {"aud": "wrong-audience"}
+    )
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "code"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_email_conflict_writes_nothing(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    await _insert_user(
+        test_engine,
+        provider_sub="google|original",
+        email="alice@example.com",
+        first_name="Original",
+    )
+    auth_client.exchanged_id_token["id_token"] = auth_client.token()
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google",
+        json={"code": "code"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "account_exists_use_existing_sign_in"}
+    assert await _user_count(test_engine) == 1
 
 
 @pytest.mark.parametrize("missing_claim", ["email", "given_name"])

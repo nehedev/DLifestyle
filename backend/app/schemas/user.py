@@ -12,6 +12,17 @@ class MeResponse(BaseModel):
     role: str
 
 
+class GoogleSignInRequest(BaseModel):
+    code: str
+
+
+class GoogleSignInResponse(BaseModel):
+    id_token: str
+    expires_at: int
+    picture: str | None
+    user: MeResponse
+
+
 class UserAdminResponse(BaseModel):
     id: int
     email: str
@@ -25,4 +36,10 @@ class UserRolePatch(BaseModel):
     role: Literal["user", "admin"]
 
 
-__all__ = ["MeResponse", "UserAdminResponse", "UserRolePatch"]
+__all__ = [
+    "GoogleSignInRequest",
+    "GoogleSignInResponse",
+    "MeResponse",
+    "UserAdminResponse",
+    "UserRolePatch",
+]

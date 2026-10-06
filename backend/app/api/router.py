@@ -15,6 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import CurrentUser, get_current_user
 from app.core.cursors import InvalidCursor
+from app.core.google import (
+    AuthProviderUnavailable,
+    InvalidAccessToken,
+    InvalidAuthorizationCode,
+)
 from app.db.session import get_session
 from app.models import ServiceRequest
 from app.payments.dependencies import get_payment_provider
@@ -30,7 +35,12 @@ from app.schemas.service_requests import (
     ServiceRequestCreate,
     ServiceRequestResponse,
 )
-from app.schemas.user import MeResponse
+from app.schemas.user import (
+    GoogleSignInRequest,
+    GoogleSignInResponse,
+    MeResponse,
+)
+from app.services.auth import sign_in_with_google_code
 from app.services.orders import (
     IdempotencyKeyReused,
     OrderingClosedForDate,
@@ -64,6 +74,7 @@ from app.services.service_requests import (
     get_service_request as find_service_request,
 )
 from app.services.store_settings import StoreNotConfigured
+from app.services.users import EmailConflict, InvalidUserClaims
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
@@ -98,6 +109,55 @@ async def get_me(
         first_name=current_user.user.first_name,
         last_name=current_user.user.last_name,
         role=current_user.user.role,
+    )
+
+
+@router.post("/auth/google", response_model=GoogleSignInResponse)
+async def post_google_sign_in(
+    body: GoogleSignInRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> GoogleSignInResponse:
+    try:
+        sign_in = await sign_in_with_google_code(session, body.code)
+    except InvalidAuthorizationCode as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_authorization_code",
+        ) from error
+    except InvalidAccessToken as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_token",
+        ) from error
+    except InvalidUserClaims as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_token",
+        ) from error
+    except AuthProviderUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="auth_provider_unavailable",
+        ) from error
+    except EmailConflict as error:
+        logger.error("user.email_conflict")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="account_exists_use_existing_sign_in",
+        ) from error
+
+    user = sign_in.user
+    return GoogleSignInResponse(
+        id_token=sign_in.id_token,
+        expires_at=sign_in.expires_at,
+        picture=sign_in.picture,
+        user=MeResponse(
+            id=user.id,
+            email=user.email,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            role=user.role,
+        ),
     )
 
 

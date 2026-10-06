@@ -10,10 +10,18 @@ from jwt import PyJWK
 from app.core.config import settings
 
 _JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+_TOKEN_URL = "https://oauth2.googleapis.com/token"
+# Google's popup code flow has no redirect endpoint; the token exchange must
+# present this literal value instead of a registered redirect URI.
+_CODE_REDIRECT_URI = "postmessage"
 _ALLOWED_ISSUERS = frozenset({"https://accounts.google.com", "accounts.google.com"})
 
 
 class InvalidAccessToken(Exception):
+    pass
+
+
+class InvalidAuthorizationCode(Exception):
     pass
 
 
@@ -106,8 +114,61 @@ class GoogleTokenVerifier:
         self._expires_at = monotonic() + self._cache_ttl_seconds
 
 
+class GoogleCodeExchanger:
+    def __init__(
+        self,
+        *,
+        client_id: str,
+        client_secret: str,
+        timeout_seconds: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._timeout_seconds = timeout_seconds
+        self._transport = transport
+
+    async def exchange(self, code: str) -> str:
+        payload = {
+            "code": code,
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "redirect_uri": _CODE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }
+        try:
+            async with httpx.AsyncClient(
+                transport=self._transport,
+                timeout=self._timeout_seconds,
+            ) as client:
+                response = await client.post(_TOKEN_URL, data=payload)
+        except httpx.HTTPError as error:
+            raise AuthProviderUnavailable from error
+
+        if response.status_code >= 500:
+            raise AuthProviderUnavailable
+        if response.status_code >= 400:
+            raise InvalidAuthorizationCode
+
+        try:
+            document = response.json()
+        except ValueError as error:
+            raise AuthProviderUnavailable from error
+
+        id_token = document.get("id_token")
+        if not isinstance(id_token, str) or not id_token:
+            raise InvalidAuthorizationCode
+        return id_token
+
+
 token_verifier = GoogleTokenVerifier(
     client_id=settings.google_client_id,
     cache_ttl_seconds=settings.jwks_cache_ttl_seconds,
     timeout_seconds=settings.jwks_timeout_seconds,
+)
+
+code_exchanger = GoogleCodeExchanger(
+    client_id=settings.google_client_id,
+    client_secret=settings.google_client_secret.get_secret_value(),
+    timeout_seconds=settings.google_token_timeout_seconds,
 )

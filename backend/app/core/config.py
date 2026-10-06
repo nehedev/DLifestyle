@@ -10,8 +10,10 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str
     google_client_id: str
+    google_client_secret: SecretStr
     jwks_cache_ttl_seconds: int
     jwks_timeout_seconds: int
+    google_token_timeout_seconds: int
     currency: str
     business_timezone: str
     payment_provider: str
