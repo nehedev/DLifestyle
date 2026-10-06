@@ -1,31 +1,27 @@
-import {
-  Auth0Provider,
-  useAuth0,
-  type User as Auth0User,
-} from '@auth0/auth0-react'
+import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google'
 import {
   createContext,
   useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
-import { setAccessTokenGetter } from './api'
-import { getMe } from './api'
+import { getMe, setAccessTokenGetter } from './api'
 import type { MeResponse } from './api'
 
-const domain = import.meta.env.VITE_AUTH0_DOMAIN
-const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID
-const audience = import.meta.env.VITE_AUTH0_AUDIENCE
+const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
 
-export const auth0Configured = Boolean(domain && clientId)
+export const googleConfigured = Boolean(clientId)
+
+// ─── Session context ─────────────────────────────────────────────────────────
 
 export interface Session {
   isAuthenticated: boolean
   isLoading: boolean
-  user?: Auth0User
+  name?: string           // first name from /me, available after sign-in
   login: () => void
   logout: () => void
   error?: string
@@ -34,67 +30,104 @@ export interface Session {
 const SessionContext = createContext<Session>({
   isAuthenticated: false,
   isLoading: false,
-  login: () => alert('Sign-in is not configured. Set VITE_AUTH0_* to enable it.'),
+  login: () => alert('Sign-in is not configured. Set VITE_GOOGLE_CLIENT_ID to enable it.'),
   logout: () => undefined,
 })
-
 export const useSession = () => useContext(SessionContext)
 
-/** Keeps the API client's bearer-token source in sync with Auth0. */
-function Auth0Session({ children }: { children: ReactNode }) {
-  const {
-    isAuthenticated,
-    isLoading,
-    user,
-    loginWithRedirect,
-    logout: auth0Logout,
-    getAccessTokenSilently,
-    error,
-  } = useAuth0()
+// ─── Token storage ────────────────────────────────────────────────────────────
 
+const TOKEN_KEY = 'damis.google_token'
+const EXPIRY_KEY = 'damis.google_expiry'
+
+function storeToken(token: string, expiresIn: number) {
+  localStorage.setItem(TOKEN_KEY, token)
+  localStorage.setItem(EXPIRY_KEY, String(Date.now() + expiresIn * 1000))
+}
+
+function loadToken(): string | null {
+  const token = localStorage.getItem(TOKEN_KEY)
+  const expiry = Number(localStorage.getItem(EXPIRY_KEY) ?? 0)
+  if (!token || Date.now() > expiry - 60_000) return null
+  return token
+}
+
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(EXPIRY_KEY)
+}
+
+// ─── Inner session component (must be inside GoogleOAuthProvider) ─────────────
+
+function GoogleSession({ children }: { children: ReactNode }) {
+  const [token, setToken] = useState<string | null>(loadToken)
+  const [name, setName] = useState<string | undefined>()
+  const [error, setError] = useState<string | undefined>()
+  const [isLoading, setIsLoading] = useState(false)
+  const tokenRef = useRef(token)
+  tokenRef.current = token
+
+  // Wire the access token into the API client
   useEffect(() => {
-    setAccessTokenGetter(async () => {
-      if (!isAuthenticated) return undefined
-      try {
-        return await getAccessTokenSilently()
-      } catch {
-        return undefined
-      }
-    })
+    setAccessTokenGetter(async () => tokenRef.current ?? undefined)
     return () => setAccessTokenGetter(async () => undefined)
-  }, [isAuthenticated, getAccessTokenSilently])
+  }, [])
 
-  const login = useCallback(
-    () => loginWithRedirect({ appState: { returnTo: '/cart' } }),
-    [loginWithRedirect],
-  )
-  const logout = useCallback(
-    () => auth0Logout({ logoutParams: { returnTo: window.location.origin } }),
-    [auth0Logout],
-  )
+  // Fetch first name once we have a token
+  useEffect(() => {
+    if (!token) { setName(undefined); return }
+    getMe()
+      .then(me => setName(me.first_name))
+      .catch(() => undefined)
+  }, [token])
+
+  const handleSuccess = useCallback((response: { access_token: string; expires_in: number }) => {
+    storeToken(response.access_token, response.expires_in)
+    setToken(response.access_token)
+    setError(undefined)
+    setIsLoading(false)
+  }, [])
+
+  const googleLogin = useGoogleLogin({
+    onSuccess: handleSuccess,
+    onError: () => {
+      setError('Google sign-in failed. Please try again.')
+      setIsLoading(false)
+    },
+    onNonOAuthError: () => {
+      setIsLoading(false)
+    },
+  })
+
+  const login = useCallback(() => {
+    setIsLoading(true)
+    setError(undefined)
+    googleLogin()
+  }, [googleLogin])
+
+  const logout = useCallback(() => {
+    clearToken()
+    setToken(null)
+    setName(undefined)
+    setError(undefined)
+  }, [])
 
   const value = useMemo<Session>(
-    () => ({
-      isAuthenticated,
-      isLoading,
-      user,
-      login,
-      logout,
-      error: error?.message,
-    }),
-    [isAuthenticated, isLoading, user, login, logout, error],
+    () => ({ isAuthenticated: Boolean(token), isLoading, name, login, logout, error }),
+    [token, isLoading, name, login, logout, error],
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
+
+// ─── Unconfigured fallback ────────────────────────────────────────────────────
 
 function UnconfiguredSession({ children }: { children: ReactNode }) {
   const value = useMemo<Session>(
     () => ({
       isAuthenticated: false,
       isLoading: false,
-      login: () =>
-        alert('Sign-in is not configured. Set VITE_AUTH0_* to enable it.'),
+      login: () => alert('Sign-in is not configured. Set VITE_GOOGLE_CLIENT_ID to enable it.'),
       logout: () => undefined,
     }),
     [],
@@ -102,30 +135,21 @@ function UnconfiguredSession({ children }: { children: ReactNode }) {
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
 
+// ─── Root auth provider ───────────────────────────────────────────────────────
+
 export function AppAuth({ children }: { children: ReactNode }) {
-  if (!auth0Configured) return <UnconfiguredSession>{children}</UnconfiguredSession>
+  if (!googleConfigured || !clientId) {
+    return <UnconfiguredSession>{children}</UnconfiguredSession>
+  }
   return (
-    <Auth0Provider
-      domain={domain as string}
-      clientId={clientId as string}
-      cacheLocation="localstorage"
-      useRefreshTokens
-      authorizationParams={{
-        audience,
-        redirect_uri: `${window.location.origin}/`,
-      }}
-      onRedirectCallback={(appState) => {
-        window.location.hash = appState?.returnTo ?? '/'
-      }}
-    >
-      <Auth0Session>{children}</Auth0Session>
-    </Auth0Provider>
+    <GoogleOAuthProvider clientId={clientId}>
+      <GoogleSession>{children}</GoogleSession>
+    </GoogleOAuthProvider>
   )
 }
 
-export type { Auth0User }
+// ─── Admin hook ───────────────────────────────────────────────────────────────
 
-/** Fetches /me once authenticated and exposes the admin role flag. */
 export function useAdmin(): { isAdmin: boolean; me: MeResponse | null; loading: boolean } {
   const { isAuthenticated, isLoading } = useSession()
   const [me, setMe] = useState<MeResponse | null>(null)

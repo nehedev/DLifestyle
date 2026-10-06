@@ -15,7 +15,7 @@ export function Logo({ light }: { light?: boolean }) {
 
 export function Header({ count, go }: { count: number; go: string }) {
   const [open, setOpen] = useState(false)
-  const { isAuthenticated, isLoading, user, login, logout } = useSession()
+  const { isAuthenticated, isLoading, name, login, logout } = useSession()
   useEffect(() => setOpen(false), [go])
   const nav = [
     ['/menu', 'Menu'],
@@ -63,7 +63,7 @@ export function Header({ count, go }: { count: number; go: string }) {
           {isAuthenticated ? (
             <span className="hdr-user">
               <A to="/requests" className="lnk">
-                {user?.given_name ?? user?.name ?? 'Account'}
+                {name ?? 'Account'}
               </A>
               <button className="lnk" onClick={logout}>
                 Sign out
