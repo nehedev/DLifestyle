@@ -16,18 +16,39 @@ import { useCart, useCatalog } from '@/store'
 import { C, S } from '@/theme'
 import type { CatalogItem } from '@/types'
 
-// Maps service name keywords → MaterialCommunityIcons icon name + accent colour.
-// Falls back to a generic icon for any unlisted service.
 type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name']
 
-function serviceIcon(name: string): { icon: MCIcon; color: string } {
-  const n = name.toLowerCase()
-  if (n.includes('chef') || n.includes('cater')) return { icon: 'chef-hat', color: C.green }
-  if (n.includes('clean')) return { icon: 'broom', color: '#1565C0' }
-  if (n.includes('errand')) return { icon: 'moped', color: C.burg }
-  if (n.includes('organiz')) return { icon: 'home-edit-outline', color: '#6A1B9A' }
-  return { icon: 'briefcase-outline', color: C.mut }
-}
+// Static service cards — always shown regardless of API state.
+const STATIC_SERVICES: { icon: MCIcon; color: string; title: string; desc: string; svcName: string }[] = [
+  {
+    icon: 'chef-hat',
+    color: C.green,
+    title: 'Personal chef & catering',
+    desc: 'Custom meal prep and catering for events, big or small.',
+    svcName: 'Personal chef and catering',
+  },
+  {
+    icon: 'broom',
+    color: '#1565C0',
+    title: 'Home cleaning',
+    desc: 'Keeping your home clean, fresh, and comfortable.',
+    svcName: 'Home cleaning',
+  },
+  {
+    icon: 'moped',
+    color: C.burg,
+    title: 'Errand running',
+    desc: 'Quick deliveries and personal tasks handled for you.',
+    svcName: 'Errand running',
+  },
+  {
+    icon: 'home-edit-outline',
+    color: '#6A1B9A',
+    title: 'Home organization',
+    desc: 'Declutter and organize every corner of your home.',
+    svcName: 'Home organization',
+  },
+]
 
 export default function HomeScreen() {
   const { add } = useCart()
@@ -35,7 +56,6 @@ export default function HomeScreen() {
 
   const foodItems = items.filter((i) => i.kind === 'food')
   const featured = foodItems.slice(0, 4)
-  const services = items.filter((i) => i.kind === 'service')
 
   // Derive unique categories from live data for the quick-pick row
   const categories = [...new Set(foodItems.map((i) => i.category))].slice(0, 6)
@@ -139,7 +159,7 @@ export default function HomeScreen() {
           )}
         </View>
 
-        {/* ── Services grid — live data, icon-based cards ── */}
+        {/* ── Services grid — static, always visible ── */}
         <View style={styles.sec}>
           <View style={styles.secHead}>
             <Text style={styles.h2}>Services</Text>
@@ -150,48 +170,47 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          {loading ? (
-            <ActivityIndicator color={C.green} style={{ marginTop: 16 }} />
-          ) : services.length === 0 ? (
-            <Text style={{ color: C.mut, fontSize: 14 }}>No services listed yet.</Text>
-          ) : (
-            <View style={styles.svcGrid}>
-              {services.map((s) => {
-                const { icon, color } = serviceIcon(s.name)
-                return (
-                  <Pressable
-                    key={s.key}
-                    style={({ pressed }) => [styles.svcCard, pressed && { opacity: 0.75 }]}
-                    onPress={() =>
-                      router.push({ pathname: '/item-detail', params: { item: JSON.stringify(s) } })
-                    }
-                    accessibilityRole="button"
-                    accessibilityLabel={s.name}
-                  >
-                    <View style={[styles.svcIconWrap, { backgroundColor: color + '18' }]}>
-                      <MaterialCommunityIcons name={icon} size={28} color={color} />
-                    </View>
-                    <Text style={styles.svcCardTitle} numberOfLines={2}>{s.name}</Text>
-                    <Text style={styles.svcCardDesc} numberOfLines={2}>{s.desc}</Text>
-                    <Text style={[styles.svcCardCta, { color }]}>Book →</Text>
-                  </Pressable>
-                )
-              })}
-            </View>
-          )}
+          <View style={styles.svcGrid}>
+            {STATIC_SERVICES.map((s) => (
+              <Pressable
+                key={s.title}
+                style={({ pressed }) => [styles.svcCard, pressed && { opacity: 0.75 }]}
+                onPress={() =>
+                  router.push({ pathname: '/(tabs)/menu', params: { svc: '1' } })
+                }
+                accessibilityRole="button"
+                accessibilityLabel={s.title}
+              >
+                <View style={[styles.svcIconWrap, { backgroundColor: s.color + '18' }]}>
+                  <MaterialCommunityIcons name={s.icon} size={28} color={s.color} />
+                </View>
+                <Text style={styles.svcCardTitle}>{s.title}</Text>
+                <Text style={styles.svcCardDesc}>{s.desc}</Text>
+                <Text style={[styles.svcCardCta, { color: s.color }]}>Book →</Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
 
         {/* ── CTA panel ── */}
         <View style={styles.ctaPad}>
           <View style={styles.ctaPanel}>
-            <Text style={styles.ctaH2}>Ready to order?</Text>
-            <Text style={styles.ctaP}>Fresh food, honest prices, real people.</Text>
-            <Pressable
-              style={styles.btnBrown}
-              onPress={() => router.push('/(tabs)/menu')}
-            >
-              <Text style={styles.btnGoldTxt}>View menu</Text>
-            </Pressable>
+            <Text style={styles.ctaH2}>Ready to get started?</Text>
+            <Text style={styles.ctaP}>Fresh food and real help, whenever you need it.</Text>
+            <View style={styles.ctaBtnRow}>
+              <Pressable
+                style={styles.btnBrown}
+                onPress={() => router.push('/(tabs)/menu')}
+              >
+                <Text style={styles.btnBrownTxt}>View menu</Text>
+              </Pressable>
+              <Pressable
+                style={styles.btnBrownGhost}
+                onPress={() => router.push({ pathname: '/(tabs)/menu', params: { svc: '1' } })}
+              >
+                <Text style={styles.btnBrownTxt}>View services</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
 
@@ -333,7 +352,13 @@ const styles = StyleSheet.create({
   },
   ctaH2: { color: C.brown, fontSize: 22, fontWeight: '800' },
   ctaP: { color: 'rgba(61,40,23,0.75)', marginTop: 6, marginBottom: 16, textAlign: 'center' },
+  ctaBtnRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap', justifyContent: 'center' },
   btnBrown: {
-    backgroundColor: C.brown, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 999,
+    backgroundColor: C.brown, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 999,
   },
+  btnBrownGhost: {
+    borderWidth: 2, borderColor: C.brown, paddingHorizontal: 20, paddingVertical: 12,
+    borderRadius: 999,
+  },
+  btnBrownTxt: { color: '#fff', fontWeight: '700', fontSize: 15 },
 })
