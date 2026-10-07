@@ -1,8 +1,8 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons'
 import { router, useFocusEffect } from 'expo-router'
 import { useCallback, useState } from 'react'
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -10,8 +10,6 @@ import {
   View,
 } from 'react-native'
 import {
-  cancelOrder,
-  cancelServiceRequest,
   listOrders,
   listServiceRequests,
   naira,
@@ -21,9 +19,6 @@ import {
 import { Header } from '@/components/Header'
 import { useSession } from '@/auth'
 import { C } from '@/theme'
-
-const CANCELLABLE_ORDER = 'pending'
-const CANCELLABLE_REQUEST = ['requested', 'contacted']
 
 type Row =
   | { kind: 'order'; data: OrderResponse }
@@ -59,24 +54,6 @@ export default function OrdersScreen() {
     useCallback(() => {
       if (ready && isAuthenticated) void load()
     }, [ready, isAuthenticated, load]),
-  )
-
-  const runCancel = useCallback(
-    (action: () => Promise<unknown>, message: string) => {
-      Alert.alert('Cancel this?', message, [
-        { text: 'Keep', style: 'cancel' },
-        {
-          text: 'Cancel it',
-          style: 'destructive',
-          onPress: () => {
-            void action()
-              .then(load)
-              .catch(() => setError(message))
-          },
-        },
-      ])
-    },
-    [load],
   )
 
   if (!ready) {
@@ -122,57 +99,79 @@ export default function OrdersScreen() {
           if (item.kind === 'order') {
             const o = item.data
             return (
-              <View style={styles.card}>
+              <Pressable
+                style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+                onPress={() =>
+                  router.push({ pathname: '/order-detail', params: { orderId: String(o.id) } })
+                }
+                accessibilityRole="button"
+                accessibilityLabel={`Order ${o.id}, ${o.status}`}
+              >
                 <View style={styles.cardTop}>
-                  <Text style={styles.cardTitle}>Order #{o.id}</Text>
-                  <Text style={[styles.badge, badgeColor(o.status)]}>{o.status}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>Order #{o.id}</Text>
+                    <Text style={styles.cardMeta}>
+                      {o.fulfillment_type} · {o.fulfillment_date}
+                    </Text>
+                    <Text style={styles.cardTotal}>{naira(o.total_minor)}</Text>
+                  </View>
+                  <View style={styles.cardRight}>
+                    <Text style={[styles.badge, { backgroundColor: badgeBg(o.status) }]}>
+                      {o.status}
+                    </Text>
+                    <MaterialCommunityIcons
+                      name="chevron-right"
+                      size={20}
+                      color={C.mut}
+                      style={{ marginTop: 8 }}
+                    />
+                  </View>
                 </View>
-                <Text style={styles.cardMeta}>
-                  {o.fulfillment_type} · {o.fulfillment_date}
-                </Text>
-                <Text style={styles.cardTotal}>{naira(o.total_minor)}</Text>
-                {o.status === CANCELLABLE_ORDER && (
-                  <Pressable
-                    onPress={() =>
-                      runCancel(
-                        () => cancelOrder(o.id),
-                        'That order can no longer be cancelled.',
-                      )
-                    }
-                  >
-                    <Text style={styles.cancel}>Cancel order</Text>
-                  </Pressable>
-                )}
-              </View>
+              </Pressable>
             )
           }
+
           const s = item.data
           return (
-            <View style={styles.card}>
+            <Pressable
+              style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+              onPress={() =>
+                router.push({
+                  pathname: '/service-detail',
+                  params: { requestId: String(s.id) },
+                })
+              }
+              accessibilityRole="button"
+              accessibilityLabel={`Service request ${s.id}, ${s.status}`}
+            >
               <View style={styles.cardTop}>
-                <Text style={styles.cardTitle}>Service #{s.id}</Text>
-                <Text style={[styles.badge, badgeColor(s.status)]}>{s.status}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cardTitle}>Service #{s.id}</Text>
+                  <Text style={styles.cardMeta} numberOfLines={1}>
+                    {s.location}
+                  </Text>
+                  {s.preferred_date ? (
+                    <Text style={styles.cardMeta}>Preferred: {s.preferred_date}</Text>
+                  ) : null}
+                  {s.quoted_amount_minor != null && (
+                    <Text style={styles.cardTotal}>
+                      Quote: {naira(s.quoted_amount_minor)}
+                    </Text>
+                  )}
+                </View>
+                <View style={styles.cardRight}>
+                  <Text style={[styles.badge, { backgroundColor: badgeBg(s.status) }]}>
+                    {s.status}
+                  </Text>
+                  <MaterialCommunityIcons
+                    name="chevron-right"
+                    size={20}
+                    color={C.mut}
+                    style={{ marginTop: 8 }}
+                  />
+                </View>
               </View>
-              <Text style={styles.cardMeta}>{s.location}</Text>
-              {s.preferred_date ? (
-                <Text style={styles.cardMeta}>Preferred: {s.preferred_date}</Text>
-              ) : null}
-              {s.quoted_amount_minor != null && (
-                <Text style={styles.cardTotal}>Quote: {naira(s.quoted_amount_minor)}</Text>
-              )}
-              {CANCELLABLE_REQUEST.includes(s.status) && (
-                <Pressable
-                  onPress={() =>
-                    runCancel(
-                      () => cancelServiceRequest(s.id),
-                      'That request can no longer be cancelled.',
-                    )
-                  }
-                >
-                  <Text style={styles.cancel}>Cancel request</Text>
-                </Pressable>
-              )}
-            </View>
+            </Pressable>
           )
         }}
         ListEmptyComponent={
@@ -194,12 +193,12 @@ export default function OrdersScreen() {
   )
 }
 
-const badgeColor = (status: string) => {
+const badgeBg = (status: string) => {
   const s = status.toLowerCase()
-  if (s.includes('cancel')) return { backgroundColor: C.burg }
-  if (s.includes('complete') || s.includes('paid')) return { backgroundColor: C.green }
-  if (s.includes('pending') || s.includes('preparing')) return { backgroundColor: '#B8791F' }
-  return { backgroundColor: C.mut }
+  if (s.includes('cancel')) return C.burg
+  if (s.includes('complete') || s.includes('paid')) return C.green
+  if (s.includes('pending') || s.includes('preparing')) return '#B8791F'
+  return C.mut
 }
 
 const styles = StyleSheet.create({
@@ -210,17 +209,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff', borderRadius: 14, padding: 16, marginBottom: 10,
     borderWidth: 1, borderColor: C.line,
   },
-  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  cardTitle: { fontWeight: '700', fontSize: 16 },
+  cardPressed: { opacity: 0.7 },
+  cardTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  cardRight: { alignItems: 'flex-end' },
+  cardTitle: { fontWeight: '700', fontSize: 16, color: C.ink },
   badge: {
-    color: '#fff', fontSize: 12, fontWeight: '700',
-    paddingHorizontal: 10, paddingVertical: 3, borderRadius: 999, overflow: 'hidden',
+    color: '#fff', fontSize: 11, fontWeight: '700',
+    paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, overflow: 'hidden',
   },
-  cardMeta: { color: C.mut, marginTop: 6, fontSize: 13 },
-  cardTotal: { fontWeight: '800', color: C.green, marginTop: 6, fontSize: 16 },
-  cancel: {
-    color: C.burg, fontWeight: '600', marginTop: 10, textDecorationLine: 'underline',
-  },
+  cardMeta: { color: C.mut, marginTop: 4, fontSize: 13 },
+  cardTotal: { fontWeight: '800', color: C.green, marginTop: 5, fontSize: 15 },
   gate: {
     flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 30,
   },

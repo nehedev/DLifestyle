@@ -35,6 +35,14 @@ export default function RootLayout() {
                 name="payment-callback"
                 options={{ headerShown: false, gestureEnabled: false }}
               />
+              <Stack.Screen
+                name="order-detail"
+                options={{ title: 'Order details' }}
+              />
+              <Stack.Screen
+                name="service-detail"
+                options={{ title: 'Service request' }}
+              />
             </Stack>
           </CartProvider>
         </CatalogProvider>

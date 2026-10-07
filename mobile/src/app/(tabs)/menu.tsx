@@ -19,16 +19,20 @@ import type { CatalogItem, Kind } from '@/types'
 type KindFilter = 'all' | Kind
 
 export default function MenuScreen() {
-  const params = useLocalSearchParams<{ svc?: string }>()
+  const params = useLocalSearchParams<{ svc?: string; cat?: string }>()
   const { add } = useCart()
   const { items, loading, error, reload } = useCatalog()
   const [kind, setKind] = useState<KindFilter>(params.svc === '1' ? 'service' : 'all')
   const [q, setQ] = useState('')
-  const [cat, setCat] = useState('All')
+  const [cat, setCat] = useState(params.cat ?? 'All')
 
   useEffect(() => {
     if (params.svc === '1') setKind('service')
   }, [params.svc])
+
+  useEffect(() => {
+    if (params.cat) setCat(params.cat)
+  }, [params.cat])
 
   const categories = useMemo(() => {
     const foodCats = [...new Set(items.filter((i) => i.kind === 'food').map((i) => i.category))]
