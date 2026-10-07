@@ -1,28 +1,43 @@
 {
   "expo": {
-    "name": "Dami's Lifestyle",
-    "slug": "damis-lifestyle",
+    "name": "mobile",
+    "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
     "scheme": "damis",
-    "userInterfaceStyle": "light",
-    "splash": {
-      "backgroundColor": "#FFFCE0",
-      "resizeMode": "contain"
-    },
+    "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.damis.lifestyle"
+      "icon": "./assets/expo.icon"
     },
     "android": {
-      "package": "com.damis.lifestyle"
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
     },
     "web": {
-      "bundler": "metro"
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
     },
-    "plugins": ["expo-web-browser", "expo-secure-store"],
-    "extra": {
-      "eas": { "projectId": "replace-with-your-eas-project-id" }
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#208AEF",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 76
+        }
+      ],
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
     }
   }
 }
