@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons'
 import { router } from 'expo-router'
 import {
   ActivityIndicator,
@@ -13,13 +14,20 @@ import { Plate } from '@/components/Plate'
 import { toneFor } from '@/data'
 import { useCart, useCatalog } from '@/store'
 import { C, S } from '@/theme'
+import type { CatalogItem } from '@/types'
 
-const BENEFITS = [
-  { emoji: '🍲', title: 'Made by Chef Dami', desc: 'Every meal cooked fresh to order.' },
-  { emoji: '🚚', title: 'Delivery or pickup', desc: 'Your choice, your schedule.' },
-  { emoji: '💳', title: 'Card or transfer', desc: 'Pay the way that suits you.' },
-  { emoji: '📞', title: 'Real people', desc: 'Message or call — we answer.' },
-]
+// Maps service name keywords → MaterialCommunityIcons icon name + accent colour.
+// Falls back to a generic icon for any unlisted service.
+type MCIcon = React.ComponentProps<typeof MaterialCommunityIcons>['name']
+
+function serviceIcon(name: string): { icon: MCIcon; color: string } {
+  const n = name.toLowerCase()
+  if (n.includes('chef') || n.includes('cater')) return { icon: 'chef-hat', color: C.green }
+  if (n.includes('clean')) return { icon: 'broom', color: '#1565C0' }
+  if (n.includes('errand')) return { icon: 'moped', color: C.burg }
+  if (n.includes('organiz')) return { icon: 'home-edit-outline', color: '#6A1B9A' }
+  return { icon: 'briefcase-outline', color: C.mut }
+}
 
 export default function HomeScreen() {
   const { add } = useCart()
@@ -27,7 +35,7 @@ export default function HomeScreen() {
 
   const foodItems = items.filter((i) => i.kind === 'food')
   const featured = foodItems.slice(0, 4)
-  const services = items.filter((i) => i.kind === 'service').slice(0, 4)
+  const services = items.filter((i) => i.kind === 'service')
 
   // Derive unique categories from live data for the quick-pick row
   const categories = [...new Set(foodItems.map((i) => i.category))].slice(0, 6)
@@ -39,12 +47,8 @@ export default function HomeScreen() {
 
         {/* ── Hero ── */}
         <View style={styles.hero}>
-          {/* top accent strip */}
           <View style={styles.heroAccent} />
           <View style={styles.heroContent}>
-            <View style={styles.heroBadge}>
-              <Text style={styles.heroBadgeTxt}>🍽  Dami's Lifestyle</Text>
-            </View>
             <Text style={styles.heroH1}>Home-cooked meals & everyday help.</Text>
             <Text style={styles.heroP}>
               Fresh Nigerian food or lifestyle services — delivered or picked up.
@@ -65,7 +69,6 @@ export default function HomeScreen() {
                 <Text style={styles.btnGhostTxt}>Book a service</Text>
               </Pressable>
             </View>
-            {/* fact pills */}
             <View style={styles.factRow}>
               {['Cooked to order', 'Delivery or pickup', 'Card or transfer'].map((f) => (
                 <View key={f} style={styles.factPill}>
@@ -76,7 +79,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* ── Category quick-picks (shown once data loads) ── */}
+        {/* ── Category quick-picks ── */}
         {!loading && !error && categories.length > 0 && (
           <View style={styles.quickSec}>
             <Text style={styles.quickLabel}>Browse by category</Text>
@@ -130,87 +133,55 @@ export default function HomeScreen() {
           ) : (
             <View style={styles.grid}>
               {featured.map((it) => (
-                <Pressable
-                  key={it.key}
-                  style={styles.card}
-                  onPress={() =>
-                    router.push({ pathname: '/item-detail', params: { item: JSON.stringify(it) } })
-                  }
-                >
-                  <Plate item={it} />
-                  <View style={styles.cardBody}>
-                    <Text style={styles.cardTag}>{it.category}</Text>
-                    <Text style={styles.cardTitle}>{it.name}</Text>
-                    {it.desc ? (
-                      <Text style={styles.cardDesc} numberOfLines={2}>{it.desc}</Text>
-                    ) : null}
-                    <View style={styles.cardFoot}>
-                      <Text style={styles.price}>{naira(it.price_minor ?? 0)}</Text>
-                      <Pressable
-                        style={[styles.addBtn, it.sold_out && { opacity: 0.4 }]}
-                        onPress={() => add(it)}
-                        disabled={it.sold_out}
-                      >
-                        <Text style={styles.addBtnTxt}>
-                          {it.sold_out ? 'Sold out' : 'Add'}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                </Pressable>
+                <FoodCard key={it.key} item={it} onAdd={() => add(it)} />
               ))}
             </View>
           )}
         </View>
 
-        {/* ── Services (always shown; just shows empty state if data not ready) ── */}
-        {(services.length > 0 || !loading) && (
-          <View style={styles.darkSec}>
-            <Text style={styles.darkH2}>Services we offer</Text>
-            <Text style={styles.darkP}>Book a pro — we'll reach out with a quote.</Text>
-            {loading ? (
-              <ActivityIndicator color={C.gold} style={{ marginTop: 8 }} />
-            ) : services.length === 0 ? (
-              <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 14 }}>
-                No services listed yet.
-              </Text>
-            ) : (
-              services.map((s) => (
-                <Pressable
-                  key={s.key}
-                  style={styles.svcRow}
-                  onPress={() =>
-                    router.push({ pathname: '/item-detail', params: { item: JSON.stringify(s) } })
-                  }
-                >
-                  <View style={styles.svcIcon}>
-                    <Text style={{ fontSize: 22 }}>✨</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.svcTitle}>{s.name}</Text>
-                    <Text style={styles.svcDesc} numberOfLines={2}>{s.desc}</Text>
-                  </View>
-                </Pressable>
-              ))
-            )}
-          </View>
-        )}
-
-        {/* ── Benefits 2×2 — always visible, no API dependency ── */}
+        {/* ── Services grid — live data, icon-based cards ── */}
         <View style={styles.sec}>
-          <Text style={styles.h2}>Why people choose us</Text>
-          <View style={styles.benefitGrid}>
-            {BENEFITS.map((b) => (
-              <View key={b.title} style={styles.benefitCard}>
-                <Text style={styles.benefitEmoji}>{b.emoji}</Text>
-                <Text style={styles.benefitTitle}>{b.title}</Text>
-                <Text style={styles.benefitDesc}>{b.desc}</Text>
-              </View>
-            ))}
+          <View style={styles.secHead}>
+            <Text style={styles.h2}>Services</Text>
+            <Pressable
+              onPress={() => router.push({ pathname: '/(tabs)/menu', params: { svc: '1' } })}
+            >
+              <Text style={styles.seeAll}>See all →</Text>
+            </Pressable>
           </View>
+
+          {loading ? (
+            <ActivityIndicator color={C.green} style={{ marginTop: 16 }} />
+          ) : services.length === 0 ? (
+            <Text style={{ color: C.mut, fontSize: 14 }}>No services listed yet.</Text>
+          ) : (
+            <View style={styles.svcGrid}>
+              {services.map((s) => {
+                const { icon, color } = serviceIcon(s.name)
+                return (
+                  <Pressable
+                    key={s.key}
+                    style={({ pressed }) => [styles.svcCard, pressed && { opacity: 0.75 }]}
+                    onPress={() =>
+                      router.push({ pathname: '/item-detail', params: { item: JSON.stringify(s) } })
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel={s.name}
+                  >
+                    <View style={[styles.svcIconWrap, { backgroundColor: color + '18' }]}>
+                      <MaterialCommunityIcons name={icon} size={28} color={color} />
+                    </View>
+                    <Text style={styles.svcCardTitle} numberOfLines={2}>{s.name}</Text>
+                    <Text style={styles.svcCardDesc} numberOfLines={2}>{s.desc}</Text>
+                    <Text style={[styles.svcCardCta, { color }]}>Book →</Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+          )}
         </View>
 
-        {/* ── CTA panel — always visible ── */}
+        {/* ── CTA panel ── */}
         <View style={styles.ctaPad}>
           <View style={styles.ctaPanel}>
             <Text style={styles.ctaH2}>Ready to order?</Text>
@@ -229,19 +200,48 @@ export default function HomeScreen() {
   )
 }
 
+// ── Extracted food card component ────────────────────────────────────────────
+
+function FoodCard({ item, onAdd }: { item: CatalogItem; onAdd: () => void }) {
+  return (
+    <Pressable
+      style={styles.card}
+      onPress={() =>
+        router.push({ pathname: '/item-detail', params: { item: JSON.stringify(item) } })
+      }
+    >
+      <Plate item={item} />
+      <View style={styles.cardBody}>
+        <Text style={styles.cardTag}>{item.category}</Text>
+        <Text style={styles.cardTitle}>{item.name}</Text>
+        {item.desc ? (
+          <Text style={styles.cardDesc} numberOfLines={2}>{item.desc}</Text>
+        ) : null}
+        <View style={styles.cardFoot}>
+          <Text style={styles.price}>{naira(item.price_minor ?? 0)}</Text>
+          <Pressable
+            style={[styles.addBtn, item.sold_out && { opacity: 0.4 }]}
+            onPress={onAdd}
+            disabled={item.sold_out}
+          >
+            <Text style={styles.addBtnTxt}>{item.sold_out ? 'Sold out' : 'Add'}</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Pressable>
+  )
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  // ── Hero — solid green brand block, no image dependency
+  // ── Hero
   hero: { backgroundColor: C.green, overflow: 'hidden' },
   heroAccent: {
     position: 'absolute', top: 0, right: -40, width: 220, height: 220,
     borderRadius: 110, backgroundColor: 'rgba(255,255,255,0.06)',
   },
   heroContent: { padding: 24, paddingTop: 36, paddingBottom: 28 },
-  heroBadge: {
-    alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5, marginBottom: 14,
-  },
-  heroBadgeTxt: { color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
   heroH1: { color: '#fff', fontSize: 30, fontWeight: '800', lineHeight: 36 },
   heroP: { color: 'rgba(255,255,255,0.85)', fontSize: 15, marginTop: 10, marginBottom: 20 },
   ctaRow: { flexDirection: 'row', gap: 10, flexWrap: 'wrap' },
@@ -278,7 +278,10 @@ const styles = StyleSheet.create({
 
   // ── Sections
   sec: { padding: 20 },
-  secHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  secHead: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 16,
+  },
   h2: { fontSize: 22, fontWeight: '800', color: C.green },
   seeAll: { fontSize: 13, color: C.green, fontWeight: '600' },
   errorBox: {
@@ -294,16 +297,14 @@ const styles = StyleSheet.create({
 
   // ── Food cards
   grid: { gap: 14 },
-  card: {
-    backgroundColor: '#fff', borderRadius: 20, padding: 12,
-    ...S.shadow,
-  },
+  card: { backgroundColor: '#fff', borderRadius: 20, padding: 12, ...S.shadow },
   cardBody: { paddingTop: 10, gap: 4 },
   cardTag: { fontSize: 12, color: C.mut, fontWeight: '600' },
   cardTitle: { fontSize: 17, fontWeight: '700', color: C.ink },
   cardDesc: { fontSize: 13, color: C.mut },
   cardFoot: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8,
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginTop: 8,
   },
   price: { fontSize: 16, fontWeight: '800', color: C.green },
   addBtn: {
@@ -311,31 +312,19 @@ const styles = StyleSheet.create({
   },
   addBtnTxt: { color: '#fff', fontWeight: '700', fontSize: 13 },
 
-  // ── Services dark section
-  darkSec: { backgroundColor: C.brown, padding: 24, gap: 12 },
-  darkH2: { color: '#fff', fontSize: 22, fontWeight: '800' },
-  darkP: { color: 'rgba(255,255,255,0.65)', marginBottom: 4 },
-  svcRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14,
-    backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 14,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-  },
-  svcIcon: {
-    width: 44, height: 44, borderRadius: 12, backgroundColor: C.green,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  svcTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  svcDesc: { color: 'rgba(255,255,255,0.7)', fontSize: 13, marginTop: 2 },
-
-  // ── Benefits 2×2 grid
-  benefitGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 4 },
-  benefitCard: {
+  // ── Services 2×2 icon grid
+  svcGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  svcCard: {
     width: '47%', backgroundColor: '#fff', borderRadius: 16, padding: 16,
-    borderWidth: 1, borderColor: C.line, gap: 4,
+    borderWidth: 1, borderColor: C.line, gap: 6,
   },
-  benefitEmoji: { fontSize: 26, marginBottom: 4 },
-  benefitTitle: { fontWeight: '700', fontSize: 14, color: C.ink },
-  benefitDesc: { fontSize: 12, color: C.mut, lineHeight: 17 },
+  svcIconWrap: {
+    width: 52, height: 52, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 4,
+  },
+  svcCardTitle: { fontWeight: '700', fontSize: 14, color: C.ink },
+  svcCardDesc: { fontSize: 12, color: C.mut, lineHeight: 17 },
+  svcCardCta: { fontSize: 12, fontWeight: '700', marginTop: 2 },
 
   // ── CTA panel
   ctaPad: { padding: 20 },
