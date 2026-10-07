@@ -733,3 +733,101 @@ async def test_admin_route_with_the_db_admin_role_passes(
     response = await _probe(admin_probe_app, auth_client.token())
     assert response.status_code == 200
     assert response.json() == {"is_admin": True}
+
+
+# ─── /auth/google/token (id_token direct, mobile implicit flow) ───────────────
+
+
+async def test_google_sign_in_with_token_provisions_user(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    id_token = auth_client.token({"picture": "https://example.com/alice.png"})
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google/token",
+        json={"id_token": id_token},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id_token"] == id_token
+    assert body["picture"] == "https://example.com/alice.png"
+    assert body["expires_at"] > 0
+    assert body["user"]["email"] == "alice@example.com"
+    assert body["user"]["first_name"] == "Alice"
+    assert body["user"]["last_name"] == "Lovelace"
+    assert body["user"]["role"] == "user"
+    assert await _user_count(test_engine) == 1
+    assert auth_client.enqueued_tasks == [("send_welcome_email", [body["user"]["id"]])]
+    # No code exchange should happen for the token endpoint
+    assert auth_client.code_exchange_requests == []
+
+
+async def test_google_sign_in_with_token_rejects_invalid_token(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    response = await auth_client.client.post(
+        "/api/v1/auth/google/token",
+        json={"id_token": "not-a-jwt"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_with_token_rejects_bad_audience(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    id_token = auth_client.token({"aud": "wrong-audience"})
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google/token",
+        json={"id_token": id_token},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_token"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_with_token_reports_jwks_outage(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    auth_client.jwks_status[0] = 503
+    id_token = auth_client.token()
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google/token",
+        json={"id_token": id_token},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "auth_provider_unavailable"}
+    assert await _user_count(test_engine) == 0
+
+
+async def test_google_sign_in_with_token_email_conflict(
+    auth_client: AuthTestClient,
+    test_engine: AsyncEngine,
+) -> None:
+    await _insert_user(
+        test_engine,
+        provider_sub="google|original",
+        email="alice@example.com",
+        first_name="Original",
+    )
+    id_token = auth_client.token()
+
+    response = await auth_client.client.post(
+        "/api/v1/auth/google/token",
+        json={"id_token": id_token},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "account_exists_use_existing_sign_in"}
+    assert await _user_count(test_engine) == 1

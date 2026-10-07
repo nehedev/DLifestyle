@@ -18,6 +18,32 @@ class GoogleSignIn:
     user: User
 
 
+async def sign_in_with_google_token(
+    session: AsyncSession,
+    id_token: str,
+) -> GoogleSignIn:
+    """Verify a Google ID token directly and provision the local user.
+
+    Used by native mobile clients that receive an id_token directly via
+    Google's implicit / hybrid flow — no server-side code exchange needed.
+    The token is verified against Google's JWKS before any session is issued.
+    """
+    claims: Mapping[str, Any] = await google.token_verifier.verify(id_token)
+    user = await resolve_current_user(session, claims)
+
+    expires_at = claims.get("exp")
+    if not isinstance(expires_at, int):
+        raise InvalidAccessToken
+    picture = claims.get("picture")
+
+    return GoogleSignIn(
+        id_token=id_token,
+        expires_at=expires_at,
+        picture=picture if isinstance(picture, str) else None,
+        user=user,
+    )
+
+
 async def sign_in_with_google_code(
     session: AsyncSession,
     code: str,

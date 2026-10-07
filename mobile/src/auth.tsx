@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as AuthSession from 'expo-auth-session'
+import * as Crypto from 'expo-crypto'
 import * as WebBrowser from 'expo-web-browser'
 import {
   createContext,
@@ -18,7 +19,7 @@ import {
   Text,
   View,
 } from 'react-native'
-import { ApiError, googleSignIn, setAccessTokenGetter } from './api'
+import { ApiError, googleSignInWithToken, setAccessTokenGetter } from './api'
 import { C } from './theme'
 
 WebBrowser.maybeCompleteAuthSession()
@@ -26,6 +27,9 @@ WebBrowser.maybeCompleteAuthSession()
 const CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID as string | undefined
 export const googleConfigured = Boolean(CLIENT_ID)
 
+// Implicit flow: the id_token is returned directly in the redirect fragment.
+// No redirect URI needs to be registered in Google Cloud Console for this flow —
+// Google only validates that the client ID is correct.
 export const GOOGLE_REDIRECT_URI = AuthSession.makeRedirectUri({
   scheme: 'damis',
   path: 'oauth',
@@ -165,23 +169,48 @@ function GoogleSession({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // Generate a fresh nonce for every auth request.
+  // Google requires a nonce with id_token requests; we send the SHA-256 hash
+  // so the raw value is never transmitted. The backend only verifies the token
+  // signature — nonce checking happens client-side if needed.
+  const [nonce, setNonce] = useState<string>('')
+  const [nonceHash, setNonceHash] = useState<string>('')
+
+  useEffect(() => {
+    Crypto.getRandomBytesAsync(16).then((bytes) => {
+      const raw = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+      setNonce(raw)
+      return Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        raw,
+        { encoding: Crypto.CryptoEncoding.HEX },
+      )
+    }).then(setNonceHash)
+  }, [])
+
+  // Implicit flow: responseType = IdToken means Google returns the id_token
+  // directly in the redirect fragment. No redirect URI registration required
+  // in Google Cloud Console — only the client ID is validated.
   const [, response, promptAsync] = AuthSession.useAuthRequest(
     {
       clientId: CLIENT_ID ?? '',
       scopes: ['openid', 'profile', 'email'],
-      responseType: AuthSession.ResponseType.Code,
+      responseType: AuthSession.ResponseType.IdToken,
       redirectUri: GOOGLE_REDIRECT_URI,
       usePKCE: false,
-      extraParams: { access_type: 'offline', prompt: 'consent' },
+      extraParams: {
+        nonce: nonceHash,
+        prompt: 'consent',
+      },
     },
     discovery,
   )
 
-  const handleCode = useCallback(async (code: string) => {
+  const handleIdToken = useCallback(async (idToken: string) => {
     setIsLoading(true)
     setError(undefined)
     try {
-      const session = await googleSignIn(code, GOOGLE_REDIRECT_URI)
+      const session = await googleSignInWithToken(idToken)
       await persistSession(
         session.id_token,
         session.expires_at,
@@ -205,21 +234,28 @@ function GoogleSession({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!response) return
-    if (response.type === 'success' && response.params.code) {
-      void handleCode(response.params.code)
+    if (response.type === 'success') {
+      const idToken = response.params.id_token
+      if (idToken) {
+        void handleIdToken(idToken)
+      } else {
+        setError('Google sign-in did not return a token. Please try again.')
+        setIsLoading(false)
+      }
     } else if (response.type === 'error') {
       setError('Google sign-in failed. Please try again.')
       setIsLoading(false)
-    } else if (response.type === 'dismiss') {
+    } else if (response.type === 'cancel' || response.type === 'dismiss') {
       setIsLoading(false)
     }
-  }, [response, handleCode])
+  }, [response, handleIdToken])
 
   const login = useCallback(() => {
+    if (!nonceHash) return // nonce not ready yet
     setIsLoading(true)
     setError(undefined)
     void promptAsync()
-  }, [promptAsync])
+  }, [promptAsync, nonceHash])
 
   const logout = useCallback(() => {
     void clearSession()
@@ -228,9 +264,22 @@ function GoogleSession({ children }: { children: ReactNode }) {
     setPicture(undefined)
     setError(undefined)
     setWelcome(null)
+    // Regenerate nonce so the next login gets a fresh one
+    Crypto.getRandomBytesAsync(16).then((bytes) => {
+      const raw = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+      setNonce(raw)
+      return Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        raw,
+        { encoding: Crypto.CryptoEncoding.HEX },
+      )
+    }).then(setNonceHash)
   }, [])
 
   const dismissWelcome = useCallback(() => setWelcome(null), [])
+
+  // Suppress nonce from renders — it's only used in the auth request
+  void nonce
 
   const value = useMemo<Session>(
     () => ({

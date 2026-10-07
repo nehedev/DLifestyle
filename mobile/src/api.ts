@@ -147,7 +147,9 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   }
   if (tokenGetter) {
     const token = await tokenGetter()
-    if (token) headers.set('Authorization', `Bearer ${token}`)
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`)
+    }
   }
 
   const response = await fetch(`${API_BASE}${path}`, { ...init, headers })
@@ -170,7 +172,11 @@ export const getServices = async (): Promise<Service[]> =>
 
 export const getStore = (): Promise<StoreInfo> => request<StoreInfo>('/api/v1/store')
 
-export const getMe = (): Promise<MeResponse> => request<MeResponse>('/api/v1/me')
+export const getMe = (token?: string): Promise<MeResponse> =>
+  request<MeResponse>(
+    '/api/v1/me',
+    token ? { headers: { Authorization: `Bearer ${token}` } } : {},
+  )
 
 export const googleSignIn = (
   code: string,
@@ -179,6 +185,16 @@ export const googleSignIn = (
   request<GoogleSignInResponse>('/api/v1/auth/google', {
     method: 'POST',
     body: JSON.stringify({ code, redirect_uri: redirectUri }),
+  })
+
+/** Used by native mobile clients: verifies an id_token obtained directly
+ *  from Google's implicit flow, no code exchange required. */
+export const googleSignInWithToken = (
+  idToken: string,
+): Promise<GoogleSignInResponse> =>
+  request<GoogleSignInResponse>('/api/v1/auth/google/token', {
+    method: 'POST',
+    body: JSON.stringify({ id_token: idToken }),
   })
 
 /** Loads the signed-in user's cart. */

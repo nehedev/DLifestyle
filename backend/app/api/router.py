@@ -39,9 +39,10 @@ from app.schemas.service_requests import (
 from app.schemas.user import (
     GoogleSignInRequest,
     GoogleSignInResponse,
+    GoogleTokenSignInRequest,
     MeResponse,
 )
-from app.services.auth import sign_in_with_google_code
+from app.services.auth import sign_in_with_google_code, sign_in_with_google_token
 from app.services.cart import UnknownCartTarget, list_cart, replace_cart
 from app.services.orders import (
     IdempotencyKeyReused,
@@ -142,6 +143,47 @@ async def post_google_sign_in(
             detail="invalid_token",
         ) from error
     except InvalidUserClaims as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_token",
+        ) from error
+    except AuthProviderUnavailable as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="auth_provider_unavailable",
+        ) from error
+    except EmailConflict as error:
+        logger.error("user.email_conflict")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="account_exists_use_existing_sign_in",
+        ) from error
+
+    user = sign_in.user
+    return GoogleSignInResponse(
+        id_token=sign_in.id_token,
+        expires_at=sign_in.expires_at,
+        picture=sign_in.picture,
+        user=MeResponse(
+            id=user.id,
+            email=user.email,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            role=user.role,
+        ),
+    )
+
+
+@router.post("/auth/google/token", response_model=GoogleSignInResponse)
+async def post_google_sign_in_with_token(
+    body: GoogleTokenSignInRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> GoogleSignInResponse:
+    """Accept a Google ID token obtained directly by a native mobile client
+    (implicit / hybrid flow) and provision the local user."""
+    try:
+        sign_in = await sign_in_with_google_token(session, body.id_token)
+    except InvalidAccessToken as error:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_token",

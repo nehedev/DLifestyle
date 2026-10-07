@@ -20,6 +20,14 @@ class GoogleSignInRequest(BaseModel):
     redirect_uri: str | None = None
 
 
+class GoogleTokenSignInRequest(BaseModel):
+    """Used by native mobile clients that obtain an id_token directly via the
+    implicit / hybrid flow.  No code exchange is needed; the token is verified
+    against Google's JWKS on the server before any session is issued."""
+
+    id_token: str
+
+
 class GoogleSignInResponse(BaseModel):
     id_token: str
     expires_at: int
@@ -43,6 +51,7 @@ class UserRolePatch(BaseModel):
 __all__ = [
     "GoogleSignInRequest",
     "GoogleSignInResponse",
+    "GoogleTokenSignInRequest",
     "MeResponse",
     "UserAdminResponse",
     "UserRolePatch",
