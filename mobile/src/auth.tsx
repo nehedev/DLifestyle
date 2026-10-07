@@ -146,7 +146,8 @@ function GoogleSession({ children }: { children: ReactNode }) {
   const tokenRef = useRef(token)
   tokenRef.current = token
 
-  // Restore persisted session on mount.
+  // Restore persisted session on mount, then wire the token getter.
+  // ready is only set true after hydration so ready && hydrated is never split.
   useEffect(() => {
     loadSession().then((s) => {
       if (s) {
@@ -155,20 +156,16 @@ function GoogleSession({ children }: { children: ReactNode }) {
         setPicture(s.picture)
       }
       setHydrated(true)
+      setAccessTokenGetter(async () => tokenRef.current ?? undefined)
+      setReady(true)
     })
-  }, [])
-
-  // Wire the token getter into the API client.
-  useEffect(() => {
-    setAccessTokenGetter(async () => tokenRef.current ?? undefined)
-    setReady(true)
     return () => {
       setAccessTokenGetter(async () => undefined)
       setReady(false)
     }
   }, [])
 
-  const [request, response, promptAsync] = AuthSession.useAuthRequest(
+  const [, response, promptAsync] = AuthSession.useAuthRequest(
     {
       clientId: CLIENT_ID ?? '',
       scopes: ['openid', 'profile', 'email'],
