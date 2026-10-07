@@ -1,3 +1,4 @@
+import { router, useFocusEffect } from 'expo-router'
 import { useCallback, useState } from 'react'
 import {
   ActivityIndicator,
@@ -8,8 +9,6 @@ import {
   Text,
   View,
 } from 'react-native'
-import { useFocusEffect, useNavigation } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import {
   cancelOrder,
   cancelServiceRequest,
@@ -18,11 +17,10 @@ import {
   naira,
   type OrderResponse,
   type ServiceRequestResponse,
-} from '../api'
-import { Header } from '../components/Header'
-import { useSession } from '../auth'
-import { C } from '../theme'
-import type { RootStackParamList } from '../navigation'
+} from '@/api'
+import { Header } from '@/components/Header'
+import { useSession } from '@/auth'
+import { C } from '@/theme'
 
 const CANCELLABLE_ORDER = 'pending'
 const CANCELLABLE_REQUEST = ['requested', 'contacted']
@@ -31,8 +29,7 @@ type Row =
   | { kind: 'order'; data: OrderResponse }
   | { kind: 'service'; data: ServiceRequestResponse }
 
-export default function RequestsScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
+export default function OrdersScreen() {
   const { isAuthenticated, login, ready, name } = useSession()
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(false)
@@ -184,7 +181,7 @@ export default function RequestsScreen() {
               <Text style={{ color: C.mut, marginBottom: 12 }}>No activity yet.</Text>
               <Pressable
                 style={styles.btn}
-                onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}
+                onPress={() => router.push('/(tabs)/menu')}
               >
                 <Text style={styles.btnTxt}>Order something</Text>
               </Pressable>

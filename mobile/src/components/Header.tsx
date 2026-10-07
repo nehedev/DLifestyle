@@ -1,4 +1,5 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons'
+import { router } from 'expo-router'
 import { useEffect, useState } from 'react'
 import {
   Image,
@@ -9,16 +10,21 @@ import {
   View,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useNavigation } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { useSession } from '../auth'
-import { useCart } from '../store'
-import { C } from '../theme'
-import type { RootStackParamList } from '../navigation'
+import { useSession } from '@/auth'
+import { useCart } from '@/store'
+import { C } from '@/theme'
+
+type Tab = 'index' | 'menu' | 'cart' | 'orders'
+
+const TAB_ROUTES: Record<Tab, string> = {
+  index: '/(tabs)/',
+  menu: '/(tabs)/menu',
+  cart: '/(tabs)/cart',
+  orders: '/(tabs)/orders',
+}
 
 export function Header() {
   const insets = useSafeAreaInsets()
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
   const { count } = useCart()
   const { isAuthenticated, isLoading, name, picture, login, logout } = useSession()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -28,16 +34,14 @@ export function Header() {
     if (!isAuthenticated && menuOpen) setMenuOpen(false)
   }, [isAuthenticated, menuOpen])
 
-  const goToTab = (screen: 'Home' | 'Menu' | 'Cart' | 'Orders') => {
-    nav.navigate('Tabs', { screen } as never)
-  }
+  const goToTab = (tab: Tab) => router.push(TAB_ROUTES[tab] as never)
 
   const initial = (name ?? '?')[0].toUpperCase()
 
   return (
     <View style={[styles.hdr, { paddingTop: insets.top + 10 }]}>
       <View style={styles.hdrIn}>
-        <Pressable style={styles.brand} onPress={() => goToTab('Home')} hitSlop={6}>
+        <Pressable style={styles.brand} onPress={() => goToTab('index')} hitSlop={6}>
           <View style={styles.mark}>
             <Text style={styles.markTxt}>D</Text>
           </View>
@@ -50,7 +54,7 @@ export function Header() {
         <View style={styles.hdrRight}>
           <Pressable
             style={styles.cartBtn}
-            onPress={() => goToTab('Cart')}
+            onPress={() => goToTab('cart')}
             hitSlop={6}
             accessibilityLabel={`Cart, ${count} items`}
           >
@@ -111,7 +115,7 @@ export function Header() {
               style={styles.menuItem}
               onPress={() => {
                 setMenuOpen(false)
-                goToTab('Orders')
+                goToTab('orders')
               }}
             >
               <MaterialCommunityIcons name="receipt" size={18} color={C.mut} />

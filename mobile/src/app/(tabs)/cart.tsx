@@ -1,3 +1,4 @@
+import { router } from 'expo-router'
 import {
   Pressable,
   ScrollView,
@@ -5,16 +6,12 @@ import {
   Text,
   View,
 } from 'react-native'
-import { useNavigation } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { naira } from '../api'
-import { Header } from '../components/Header'
-import { useCart, useCatalog } from '../store'
-import { C } from '../theme'
-import type { RootStackParamList } from '../navigation'
+import { naira } from '@/api'
+import { Header } from '@/components/Header'
+import { useCart, useCatalog } from '@/store'
+import { C } from '@/theme'
 
 export default function CartScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
   const { lines, itemsTotalMinor, setQty, remove } = useCart()
   const { store } = useCatalog()
 
@@ -32,7 +29,7 @@ export default function CartScreen() {
           <Text style={styles.emptyTxt}>Pick a meal or request a service to get started.</Text>
           <Pressable
             style={styles.btn}
-            onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}
+            onPress={() => router.push('/(tabs)/menu')}
           >
             <Text style={styles.btnTxt}>Browse the menu</Text>
           </Pressable>
@@ -101,10 +98,10 @@ export default function CartScreen() {
             Services are quoted separately. Final delivery fee is set at checkout; pickup is free.
           </Text>
 
-          <Pressable style={styles.btn} onPress={() => nav.navigate('Checkout')}>
+          <Pressable style={styles.btn} onPress={() => router.push('/checkout')}>
             <Text style={styles.btnTxt}>Proceed to checkout</Text>
           </Pressable>
-          <Pressable onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}>
+          <Pressable onPress={() => router.push('/(tabs)/menu')}>
             <Text style={styles.continue}>Continue shopping</Text>
           </Pressable>
         </View>

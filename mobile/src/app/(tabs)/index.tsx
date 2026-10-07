@@ -1,3 +1,4 @@
+import { router } from 'expo-router'
 import {
   ActivityIndicator,
   Pressable,
@@ -6,17 +7,13 @@ import {
   Text,
   View,
 } from 'react-native'
-import { useNavigation } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { naira } from '../api'
-import { Header } from '../components/Header'
-import { Plate } from '../components/Plate'
-import { useCart, useCatalog } from '../store'
-import { C, S } from '../theme'
-import type { RootStackParamList } from '../navigation'
+import { naira } from '@/api'
+import { Header } from '@/components/Header'
+import { Plate } from '@/components/Plate'
+import { useCart, useCatalog } from '@/store'
+import { C, S } from '@/theme'
 
 export default function HomeScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
   const { add } = useCart()
   const { items, loading, error, reload } = useCatalog()
 
@@ -38,13 +35,13 @@ export default function HomeScreen() {
             <View style={styles.ctaRow}>
               <Pressable
                 style={styles.btnGold}
-                onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}
+                onPress={() => router.push('/(tabs)/menu')}
               >
                 <Text style={styles.btnGoldTxt}>Order now</Text>
               </Pressable>
               <Pressable
                 style={styles.btnGhost}
-                onPress={() => nav.navigate('Tabs', { screen: 'Menu', params: { svc: true } } as never)}
+                onPress={() => router.push({ pathname: '/(tabs)/menu', params: { svc: '1' } })}
               >
                 <Text style={styles.btnGhostTxt}>Browse services</Text>
               </Pressable>
@@ -70,7 +67,12 @@ export default function HomeScreen() {
                   <Pressable
                     key={it.key}
                     style={styles.card}
-                    onPress={() => nav.navigate('ItemDetail', { item: it })}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/item-detail',
+                        params: { item: JSON.stringify(it) },
+                      })
+                    }
                   >
                     <Plate item={it} />
                     <View style={styles.cardBody}>
@@ -106,7 +108,12 @@ export default function HomeScreen() {
                 <Pressable
                   key={s.key}
                   style={styles.svcRow}
-                  onPress={() => nav.navigate('ItemDetail', { item: s })}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/item-detail',
+                      params: { item: JSON.stringify(s) },
+                    })
+                  }
                 >
                   <View style={styles.svcIcon}>
                     <Text style={{ fontSize: 24 }}>✨</Text>
@@ -125,7 +132,7 @@ export default function HomeScreen() {
                 <Text style={styles.ctaP}>Fresh food, honest prices, real people.</Text>
                 <Pressable
                   style={styles.btnBrown}
-                  onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}
+                  onPress={() => router.push('/(tabs)/menu')}
                 >
                   <Text style={styles.btnGoldTxt}>View menu</Text>
                 </Pressable>
@@ -141,7 +148,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   hero: { minHeight: 420, position: 'relative', backgroundColor: '#1a1a1a' },
   heroOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(10,106,27,0.7)',
   },
   heroContent: { padding: 24, paddingTop: 60, paddingBottom: 60 },

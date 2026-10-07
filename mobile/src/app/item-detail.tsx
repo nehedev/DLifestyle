@@ -1,3 +1,4 @@
+import { router, useLocalSearchParams } from 'expo-router'
 import { useState } from 'react'
 import {
   Pressable,
@@ -7,18 +8,15 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { naira } from '../api'
-import { Plate } from '../components/Plate'
-import { useCart, useCatalog } from '../store'
-import { C } from '../theme'
-import type { RootStackParamList } from '../navigation'
+import { naira } from '@/api'
+import { Plate } from '@/components/Plate'
+import { useCart, useCatalog } from '@/store'
+import { C } from '@/theme'
+import type { CatalogItem } from '@/types'
 
 export default function ItemDetailScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
-  const route = useRoute<RouteProp<RootStackParamList, 'ItemDetail'>>()
-  const { item } = route.params
+  const params = useLocalSearchParams<{ item: string }>()
+  const item: CatalogItem = JSON.parse(params.item)
   const { add } = useCart()
   const { items } = useCatalog()
 
@@ -32,7 +30,7 @@ export default function ItemDetailScreen() {
 
   const addToCart = () => {
     add(item, svc ? 1 : qty, svc ? date || undefined : undefined)
-    nav.navigate('Tabs', { screen: 'Cart' } as never)
+    router.push('/(tabs)/cart')
   }
 
   return (
@@ -102,7 +100,9 @@ export default function ItemDetailScreen() {
             <Pressable
               key={i.key}
               style={styles.related}
-              onPress={() => nav.replace('ItemDetail', { item: i })}
+              onPress={() =>
+                router.replace({ pathname: '/item-detail', params: { item: JSON.stringify(i) } })
+              }
             >
               <View style={{ width: 72 }}>
                 <Plate item={i} />

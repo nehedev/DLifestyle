@@ -1,3 +1,4 @@
+import { router, useLocalSearchParams } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
@@ -8,30 +9,26 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { naira } from '../api'
-import { Header } from '../components/Header'
-import { Plate } from '../components/Plate'
-import { useCart, useCatalog } from '../store'
-import { C } from '../theme'
-import type { CatalogItem, Kind } from '../types'
-import type { RootStackParamList, TabParamList } from '../navigation'
+import { naira } from '@/api'
+import { Header } from '@/components/Header'
+import { Plate } from '@/components/Plate'
+import { useCart, useCatalog } from '@/store'
+import { C } from '@/theme'
+import type { CatalogItem, Kind } from '@/types'
 
 type KindFilter = 'all' | Kind
 
 export default function MenuScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
-  const route = useRoute<RouteProp<TabParamList, 'Menu'>>()
+  const params = useLocalSearchParams<{ svc?: string }>()
   const { add } = useCart()
   const { items, loading, error, reload } = useCatalog()
-  const [kind, setKind] = useState<KindFilter>(route.params?.svc ? 'service' : 'all')
+  const [kind, setKind] = useState<KindFilter>(params.svc === '1' ? 'service' : 'all')
   const [q, setQ] = useState('')
   const [cat, setCat] = useState('All')
 
   useEffect(() => {
-    if (route.params?.svc) setKind('service')
-  }, [route.params?.svc])
+    if (params.svc === '1') setKind('service')
+  }, [params.svc])
 
   const categories = useMemo(() => {
     const foodCats = [...new Set(items.filter((i) => i.kind === 'food').map((i) => i.category))]
@@ -117,7 +114,13 @@ export default function MenuScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <Card item={item} onOpen={() => nav.navigate('ItemDetail', { item })} onAdd={() => add(item)} />
+          <Card
+            item={item}
+            onOpen={() =>
+              router.push({ pathname: '/item-detail', params: { item: JSON.stringify(item) } })
+            }
+            onAdd={() => add(item)}
+          />
         )}
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }}
         ListEmptyComponent={

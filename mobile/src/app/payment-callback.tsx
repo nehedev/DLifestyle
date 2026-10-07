@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { router, useLocalSearchParams } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
@@ -9,21 +10,19 @@ import {
   Text,
   View,
 } from 'react-native'
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { getOrder, naira, type OrderResponse } from '../api'
-import { C } from '../theme'
-import type { RootStackParamList } from '../navigation'
+import { getOrder, naira, type OrderResponse } from '@/api'
+import { C } from '@/theme'
 
 const LAST_ORDER_KEY = 'damis.lastOrderId'
 const PAID_STATES = ['paid', 'confirmed', 'completed', 'preparing', 'ready']
 const FAIL_STATES = ['cancelled', 'failed', 'payment_failed']
 
 export default function PaymentCallbackScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
-  const route = useRoute<RouteProp<RootStackParamList, 'PaymentCallback'>>()
+  const params = useLocalSearchParams<{ orderId?: string }>()
 
-  const [orderId, setOrderId] = useState<number | undefined>(route.params?.orderId)
+  const [orderId, setOrderId] = useState<number | undefined>(
+    params.orderId ? Number(params.orderId) : undefined,
+  )
   const [status, setStatus] = useState<'pending' | 'ok' | 'fail' | 'timeout'>('pending')
   const [order, setOrder] = useState<OrderResponse | null>(null)
   const [attempt, setAttempt] = useState(0)
@@ -74,8 +73,6 @@ export default function PaymentCallbackScreen() {
     void tick()
     return () => { cancelled = true }
   }, [orderId, attempt])
-
-  // ── UI ────────────────────────────────────────────────────────────────────
 
   const renderIcon = () => {
     if (status === 'ok') return (
@@ -148,12 +145,12 @@ export default function PaymentCallbackScreen() {
 
           <Pressable
             style={[styles.btn, styles.btnGhost]}
-            onPress={() => nav.navigate('Tabs', { screen: 'Orders' } as never)}
+            onPress={() => router.push('/(tabs)/orders')}
           >
             <Text style={[styles.btnTxt, { color: C.green }]}>Go to my orders</Text>
           </Pressable>
 
-          <Pressable onPress={() => nav.navigate('Tabs', { screen: 'Home' } as never)}>
+          <Pressable onPress={() => router.push('/')}>
             <Text style={styles.link}>Back to home</Text>
           </Pressable>
         </View>

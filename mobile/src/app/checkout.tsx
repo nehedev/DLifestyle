@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as Crypto from 'expo-crypto'
+import { router } from 'expo-router'
 import * as WebBrowser from 'expo-web-browser'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -10,14 +11,11 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import { useNavigation } from '@react-navigation/native'
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { ApiError, createOrder, createServiceRequest, naira, payOrder } from '../api'
-import { useCart, useCatalog } from '../store'
-import { useSession } from '../auth'
-import { toE164 } from '../data'
-import { C } from '../theme'
-import type { RootStackParamList } from '../navigation'
+import { ApiError, createOrder, createServiceRequest, naira, payOrder } from '@/api'
+import { useCart, useCatalog } from '@/store'
+import { useSession } from '@/auth'
+import { toE164 } from '@/data'
+import { C } from '@/theme'
 
 const WEB_CALLBACK =
   (process.env.EXPO_PUBLIC_WEB_CALLBACK_URL as string | undefined) ??
@@ -43,7 +41,6 @@ function tomorrow(): string {
   return date.toISOString().slice(0, 10)
 }
 
-/** Today's date as YYYY-MM-DD in an IANA timezone, falling back to UTC. */
 function todayIn(timezone: string): string {
   try {
     return new Intl.DateTimeFormat('en-CA', {
@@ -64,7 +61,6 @@ function addDays(isoDate: string, days: number): string {
 }
 
 export default function CheckoutScreen() {
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>()
   const { lines, itemsTotalMinor, clear } = useCart()
   const { store } = useCatalog()
   const { isAuthenticated, login, isLoading, name } = useSession()
@@ -103,10 +99,7 @@ export default function CheckoutScreen() {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyTxt}>Your cart is empty.</Text>
-        <Pressable
-          style={styles.btn}
-          onPress={() => nav.navigate('Tabs', { screen: 'Menu' } as never)}
-        >
+        <Pressable style={styles.btn} onPress={() => router.push('/(tabs)/menu')}>
           <Text style={styles.btnTxt}>Browse the menu</Text>
         </Pressable>
       </View>
@@ -165,12 +158,12 @@ export default function CheckoutScreen() {
         ])
         clear()
         await WebBrowser.openAuthSessionAsync(authorization_url, WEB_CALLBACK)
-        nav.replace('PaymentCallback', { orderId: order.id })
+        router.replace({ pathname: '/payment-callback', params: { orderId: String(order.id) } })
         return
       }
 
       clear()
-      nav.navigate('Tabs', { screen: 'Orders' } as never)
+      router.push('/(tabs)/orders')
     } catch (error) {
       setErr(friendlyError(error))
     } finally {
@@ -243,7 +236,7 @@ export default function CheckoutScreen() {
             </Text>
           )}
 
-          <Text style={styles.fld}>Notes for Dami (optional)</Text>
+          <Text style={styles.fld}>Notes (optional)</Text>
           <TextInput
             style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
             value={form.notes}
