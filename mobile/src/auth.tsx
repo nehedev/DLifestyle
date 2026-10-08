@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import * as AuthSession from 'expo-auth-session'
-import * as Crypto from 'expo-crypto'
-import * as WebBrowser from 'expo-web-browser'
+import {
+  GoogleSignin,
+  isErrorWithCode,
+  isNoSavedCredentialFoundResponse,
+  isSuccessResponse,
+  statusCodes,
+} from '@react-native-google-signin/google-signin'
+import * as SecureStore from 'expo-secure-store'
 import {
   createContext,
   useCallback,
@@ -15,6 +20,7 @@ import {
 import {
   Animated,
   Modal,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -22,22 +28,20 @@ import {
 import { ApiError, googleSignInWithToken, setAccessTokenGetter } from './api'
 import { C } from './theme'
 
-WebBrowser.maybeCompleteAuthSession()
+// The WEB client ID is required on both platforms: it becomes the `aud` of the
+// id_token, so your backend must verify tokens against this client ID.
+const WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID as string | undefined
+// Optional on iOS if GoogleService-Info.plist is present; harmless to pass.
+const IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID as string | undefined
 
-const CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID as string | undefined
-export const googleConfigured = Boolean(CLIENT_ID)
+export const googleConfigured = Boolean(WEB_CLIENT_ID)
 
-// Implicit flow: the id_token is returned directly in the redirect fragment.
-// No redirect URI needs to be registered in Google Cloud Console for this flow —
-// Google only validates that the client ID is correct.
-export const GOOGLE_REDIRECT_URI = AuthSession.makeRedirectUri({
-  scheme: 'damis',
-  path: 'oauth',
-})
-
-const discovery = {
-  authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-  tokenEndpoint: 'https://oauth2.googleapis.com/token',
+if (WEB_CLIENT_ID) {
+  GoogleSignin.configure({
+    webClientId: WEB_CLIENT_ID,
+    iosClientId: IOS_CLIENT_ID,
+    scopes: ['profile', 'email'],
+  })
 }
 
 // ─── Session context ─────────────────────────────────────────────────────────
@@ -63,6 +67,8 @@ const SessionContext = createContext<Session>({
 export const useSession = () => useContext(SessionContext)
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
+// Token goes in the encrypted keychain/keystore on native; AsyncStorage on web.
+// Non-sensitive profile bits stay in AsyncStorage.
 
 const TOKEN_KEY = 'damis.google_token'
 const EXPIRY_KEY = 'damis.google_expiry'
@@ -71,39 +77,69 @@ const PICTURE_KEY = 'damis.user_picture'
 
 async function persistSession(
   idToken: string,
-  expiresAt: number,
+  expiresAt: number, // seconds since epoch
   name?: string,
   picture?: string,
 ) {
-  await AsyncStorage.multiSet([
-    [TOKEN_KEY, idToken],
-    [EXPIRY_KEY, String(expiresAt * 1000)],
-    [NAME_KEY, name ?? ''],
-    [PICTURE_KEY, picture ?? ''],
-  ])
+  if (Platform.OS === 'web') {
+    // Web: store everything in AsyncStorage (no SecureStore support)
+    await AsyncStorage.multiSet([
+      [TOKEN_KEY, idToken],
+      [EXPIRY_KEY, String(expiresAt * 1000)],
+      [NAME_KEY, name ?? ''],
+      [PICTURE_KEY, picture ?? ''],
+    ])
+  } else {
+    // Native: token in SecureStore, profile in AsyncStorage
+    await SecureStore.setItemAsync(TOKEN_KEY, idToken)
+    await AsyncStorage.multiSet([
+      [EXPIRY_KEY, String(expiresAt * 1000)],
+      [NAME_KEY, name ?? ''],
+      [PICTURE_KEY, picture ?? ''],
+    ])
+  }
 }
 
 async function loadSession() {
-  const entries = await AsyncStorage.multiGet([
-    TOKEN_KEY,
-    EXPIRY_KEY,
-    NAME_KEY,
-    PICTURE_KEY,
-  ])
-  const map = Object.fromEntries(entries)
-  const token = map[TOKEN_KEY]
-  const expiry = Number(map[EXPIRY_KEY] ?? 0)
-  if (!token || Date.now() > expiry - 60_000) return null
-  return {
-    token,
-    name: map[NAME_KEY] || undefined,
-    picture: map[PICTURE_KEY] || undefined,
+  let token: string | null
+  
+  if (Platform.OS === 'web') {
+    // Web: load everything from AsyncStorage
+    const entries = await AsyncStorage.multiGet([TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+    const map = Object.fromEntries(entries)
+    token = map[TOKEN_KEY] || null
+    if (!token) return null
+    return {
+      token,
+      expiry: Number(map[EXPIRY_KEY] ?? 0),
+      name: map[NAME_KEY] || undefined,
+      picture: map[PICTURE_KEY] || undefined,
+    }
+  } else {
+    // Native: load token from SecureStore, profile from AsyncStorage
+    token = await SecureStore.getItemAsync(TOKEN_KEY)
+    const entries = await AsyncStorage.multiGet([EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+    const map = Object.fromEntries(entries)
+    if (!token) return null
+    return {
+      token,
+      expiry: Number(map[EXPIRY_KEY] ?? 0),
+      name: map[NAME_KEY] || undefined,
+      picture: map[PICTURE_KEY] || undefined,
+    }
   }
 }
 
 async function clearSession() {
-  await AsyncStorage.multiRemove([TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+  if (Platform.OS === 'web') {
+    await AsyncStorage.multiRemove([TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+  } else {
+    await SecureStore.deleteItemAsync(TOKEN_KEY)
+    await AsyncStorage.multiRemove([EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+  }
 }
+
+const EXPIRY_SKEW_MS = 60_000
 
 // ─── Welcome overlay ─────────────────────────────────────────────────────────
 
@@ -145,154 +181,177 @@ function GoogleSession({ children }: { children: ReactNode }) {
   const [picture, setPicture] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
   const [isLoading, setIsLoading] = useState(false)
-  const [ready, setReady] = useState(false)
   const [welcome, setWelcome] = useState<string | null>(null)
-  const tokenRef = useRef(token)
-  tokenRef.current = token
 
-  // Restore persisted session on mount, then wire the token getter.
-  // ready is only set true after hydration so ready && hydrated is never split.
-  useEffect(() => {
-    loadSession().then((s) => {
-      if (s) {
-        setToken(s.token)
-        setName(s.name)
-        setPicture(s.picture)
-      }
-      setHydrated(true)
-      setAccessTokenGetter(async () => tokenRef.current ?? undefined)
-      setReady(true)
-    })
-    return () => {
-      setAccessTokenGetter(async () => undefined)
-      setReady(false)
-    }
+  // Refs so the token getter always sees current values without re-registering.
+  const tokenRef = useRef<string | null>(null)
+  const expiryRef = useRef(0)
+  const refreshing = useRef<Promise<string | undefined> | null>(null)
+
+  // Exchange a Google id_token with the backend and store the resulting session.
+  const applyIdToken = useCallback(async (idToken: string) => {
+    const session = await googleSignInWithToken(idToken)
+    await persistSession(
+      session.id_token,
+      session.expires_at,
+      session.user.first_name,
+      session.picture ?? undefined,
+    )
+    tokenRef.current = session.id_token
+    expiryRef.current = session.expires_at * 1000
+    setToken(session.id_token)
+    setName(session.user.first_name)
+    setPicture(session.picture ?? undefined)
+    return session
   }, [])
 
-  // Generate a fresh nonce for every auth request.
-  // Google requires a nonce with id_token requests; we send the SHA-256 hash
-  // so the raw value is never transmitted. The backend only verifies the token
-  // signature — nonce checking happens client-side if needed.
-  const [nonce, setNonce] = useState<string>('')
-  const [nonceHash, setNonceHash] = useState<string>('')
-
-  useEffect(() => {
-    Crypto.getRandomBytesAsync(16).then((bytes) => {
-      const raw = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
-      setNonce(raw)
-      return Crypto.digestStringAsync(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        raw,
-        { encoding: Crypto.CryptoEncoding.HEX },
-      )
-    }).then(setNonceHash)
-  }, [])
-
-  // Implicit flow: responseType = IdToken means Google returns the id_token
-  // directly in the redirect fragment. No redirect URI registration required
-  // in Google Cloud Console — only the client ID is validated.
-  const [, response, promptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: CLIENT_ID ?? '',
-      scopes: ['openid', 'profile', 'email'],
-      responseType: AuthSession.ResponseType.IdToken,
-      redirectUri: GOOGLE_REDIRECT_URI,
-      usePKCE: false,
-      extraParams: {
-        nonce: nonceHash,
-        prompt: 'consent',
-      },
-    },
-    discovery,
-  )
-
-  const handleIdToken = useCallback(async (idToken: string) => {
-    setIsLoading(true)
-    setError(undefined)
-    try {
-      const session = await googleSignInWithToken(idToken)
-      await persistSession(
-        session.id_token,
-        session.expires_at,
-        session.user.first_name,
-        session.picture ?? undefined,
-      )
-      setName(session.user.first_name)
-      setPicture(session.picture ?? undefined)
-      setToken(session.id_token)
-      setWelcome(session.user.first_name)
-    } catch (err) {
-      const message =
-        err instanceof ApiError && err.status === 409
-          ? 'An account already exists for that email. Please sign in with your original method.'
-          : 'We could not verify your Google sign-in. Please try again.'
-      setError(message)
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!response) return
-    if (response.type === 'success') {
-      const idToken = response.params.id_token
-      if (idToken) {
-        void handleIdToken(idToken)
-      } else {
-        setError('Google sign-in did not return a token. Please try again.')
-        setIsLoading(false)
-      }
-    } else if (response.type === 'error') {
-      setError('Google sign-in failed. Please try again.')
-      setIsLoading(false)
-    } else if (response.type === 'cancel' || response.type === 'dismiss') {
-      setIsLoading(false)
-    }
-  }, [response, handleIdToken])
-
-  const login = useCallback(() => {
-    if (!nonceHash) return // nonce not ready yet
-    setIsLoading(true)
-    setError(undefined)
-    void promptAsync()
-  }, [promptAsync, nonceHash])
-
-  const logout = useCallback(() => {
-    void clearSession()
+  const dropLocalSession = useCallback(async () => {
+    tokenRef.current = null
+    expiryRef.current = 0
     setToken(null)
     setName(undefined)
     setPicture(undefined)
-    setError(undefined)
-    setWelcome(null)
-    // Regenerate nonce so the next login gets a fresh one
-    Crypto.getRandomBytesAsync(16).then((bytes) => {
-      const raw = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
-      setNonce(raw)
-      return Crypto.digestStringAsync(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        raw,
-        { encoding: Crypto.CryptoEncoding.HEX },
-      )
-    }).then(setNonceHash)
+    await clearSession()
   }, [])
 
-  const dismissWelcome = useCallback(() => setWelcome(null), [])
+  // Silently get a fresh id_token from Google and re-exchange it. Concurrent
+  // callers share one in-flight refresh.
+  const refresh = useCallback((): Promise<string | undefined> => {
+    if (refreshing.current) return refreshing.current
+    const p = (async () => {
+      try {
+        if (!GoogleSignin.hasPreviousSignIn()) {
+          await dropLocalSession()
+          return undefined
+        }
+        const res = await GoogleSignin.signInSilently()
+        if (isNoSavedCredentialFoundResponse(res) || !res.data.idToken) {
+          await dropLocalSession()
+          return undefined
+        }
+        const session = await applyIdToken(res.data.idToken)
+        return session.id_token
+      } catch {
+        // Transient failure (offline, backend down): keep the local session
+        // as-is and let the caller's request fail normally.
+        return undefined
+      } finally {
+        refreshing.current = null
+      }
+    })()
+    refreshing.current = p
+    return p
+  }, [applyIdToken, dropLocalSession])
 
-  // Suppress nonce from renders — it's only used in the auth request
-  void nonce
+  // Restore persisted session on mount, refresh if stale, then wire the getter.
+  useEffect(() => {
+    let cancelled = false
+
+    setAccessTokenGetter(async () => {
+      if (tokenRef.current && Date.now() < expiryRef.current - EXPIRY_SKEW_MS) {
+        return tokenRef.current
+      }
+      return refresh()
+    })
+
+    ;(async () => {
+      const s = await loadSession()
+      if (cancelled) return
+      if (s) {
+        tokenRef.current = s.token
+        expiryRef.current = s.expiry
+        setToken(s.token)
+        setName(s.name)
+        setPicture(s.picture)
+        if (Date.now() >= s.expiry - EXPIRY_SKEW_MS) {
+          await refresh()
+        }
+      }
+      if (!cancelled) setHydrated(true)
+    })()
+
+    return () => {
+      cancelled = true
+      setAccessTokenGetter(async () => undefined)
+    }
+  }, [refresh])
+
+  const login = useCallback(async () => {
+    setIsLoading(true)
+    setError(undefined)
+    try {
+      console.log('[Auth] Starting Google sign-in...')
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true })
+      console.log('[Auth] Play Services available')
+      const res = await GoogleSignin.signIn()
+      console.log('[Auth] Google sign-in response:', res)
+      if (!isSuccessResponse(res)) {
+        console.log('[Auth] User cancelled or non-success response')
+        return // user cancelled
+      }
+      const idToken = res.data.idToken
+      if (!idToken) {
+        console.error('[Auth] No idToken in response')
+        setError('Google sign-in did not return a token. Please try again.')
+        return
+      }
+      console.log('[Auth] Got idToken, calling backend...')
+      const session = await applyIdToken(idToken)
+      console.log('[Auth] Backend returned session:', session.user.email)
+      setWelcome(session.user.first_name)
+    } catch (err) {
+      console.error('[Auth] Sign-in error:', err)
+      if (err instanceof ApiError) {
+        setError(
+          err.status === 409
+            ? 'An account already exists for that email. Please sign in with your original method.'
+            : 'We could not verify your Google sign-in. Please try again.',
+        )
+      } else if (isErrorWithCode(err)) {
+        switch (err.code) {
+          case statusCodes.SIGN_IN_CANCELLED:
+          case statusCodes.IN_PROGRESS:
+            break
+          case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
+            setError('Google Play Services is unavailable or out of date on this device.')
+            break
+          default:
+            setError('Google sign-in failed. Please try again.')
+        }
+      } else {
+        setError('Google sign-in failed. Please try again.')
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }, [applyIdToken])
+
+  const logout = useCallback(async () => {
+    setError(undefined)
+    setWelcome(null)
+    try {
+      // Clears Google's cached account so the account picker shows next time.
+      await GoogleSignin.signOut()
+    } catch {
+      // Not fatal: still clear the local session below.
+    }
+    await dropLocalSession()
+  }, [dropLocalSession])
+
+  const dismissWelcome = useCallback(() => setWelcome(null), [])
 
   const value = useMemo<Session>(
     () => ({
       isAuthenticated: Boolean(token),
       isLoading,
-      ready: ready && hydrated,
+      ready: hydrated,
       name,
       picture,
-      login,
-      logout,
+      login: () => void login(),
+      logout: () => void logout(),
       error,
     }),
-    [token, isLoading, ready, hydrated, name, picture, login, logout, error],
+    [token, isLoading, hydrated, name, picture, login, logout, error],
   )
 
   return (
@@ -322,7 +381,7 @@ function UnconfiguredSession({ children }: { children: ReactNode }) {
 // ─── Root provider ───────────────────────────────────────────────────────────
 
 export function AppAuth({ children }: { children: ReactNode }) {
-  if (!googleConfigured || !CLIENT_ID) {
+  if (!googleConfigured) {
     return <UnconfiguredSession>{children}</UnconfiguredSession>
   }
   return <GoogleSession>{children}</GoogleSession>
