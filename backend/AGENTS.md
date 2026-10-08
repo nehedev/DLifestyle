@@ -2,19 +2,18 @@
 
 Backend for Dami's Lifestyle Services, a one-owner food and home-services business in Nigeria. Customers order made-to-order meals from a weekly menu (pickup or delivery) and pay online; they also send service requests (catering, cleaning, errands, home organization). The owner runs the business through admin endpoints at `/sudo`. FastAPI + async SQLAlchemy + Celery. Auth is Google (ID-token verify-only, roles in the database). Payments are Paystack behind a provider abstraction. Images are Cloudinary signed uploads.
 
-Read this file fully before writing code. Everything about the data model, flows, API, settings, and tests is in `docs/spec.md`. If the two files disagree, stop and ask.
+Read this file fully before writing code. If the two files disagree, stop and ask.
 
-**Scope:** this file lives in `backend/` and covers the backend only. Every path and command in this file and in `docs/spec.md` is relative to `backend/`; run commands from that directory. Do not edit `frontend/` or the repository-root files from backend tasks. The root `AGENTS.md` also applies (Git, completion, and reporting rules); where this file is more specific, this file wins.
+**Scope:** this file lives in `backend/` and covers the backend only. Do not edit `frontend/` or the repository-root files from backend tasks. The root `AGENTS.md` also applies (Git, completion, and reporting rules); where this file is more specific, this file wins.
 
 ---
 
 ## 0. Rule zero: never assume on the owner's behalf
 
-If something is not specified in this file or `docs/spec.md`, **stop and ask**.
+If something is not specified, **stop and ask**.
 
 - Do not fill gaps with your own defaults.
 - Do not silently pick a value for a missing setting. Required settings have no default in code.
-- Do not build anything listed under "Not in V1" in `docs/spec.md` section 14.
 
 ---
 
@@ -52,31 +51,6 @@ Docker Compose services: `api`, `worker`, `beat`, `postgres`, `redis`. Deploymen
 **Ask before adding any framework or major library not listed above.**
 
 ---
-
-## 3. Layout
-
-```
-app/
-  main.py        # FastAPI app + lifespan
-  core/          # settings, Google token verification, logging
-  db/            # engine, session, base, naming convention
-  models/        # SQLAlchemy models
-  schemas/       # Pydantic request/response models
-  api/           # routers + dependencies, mounted under /api/v1
-  services/      # business logic (menu, orders, payments, service requests). Own transactions.
-  payments/      # PaymentProvider protocol + paystack.py
-  emails/        # Resend client + templates
-  workers/       # celery_app.py, tasks, beat schedule
-alembic/
-scripts/seed_catalog.py
-tests/
-docs/spec.md
-docker-compose.yml
-.env.example
-pyproject.toml
-uv.lock
-```
-
 - Routes are thin and call services. No business logic or raw SQL in routes.
 - Services own transactions and business rules.
 - Paystack-specific code lives **only** in `app/payments/paystack.py`.
@@ -120,7 +94,7 @@ uv.lock
 
 ## 5. Settings
 
-All settings come from environment variables via pydantic-settings. **None has a default in code.** Example values live in `.env.example` (never commit `.env`). The full list is in `docs/spec.md` section 12. A missing setting fails startup. Do not invent a value.
+All settings come from environment variables via pydantic-settings. **None has a default in code.** Example values live in `.env.example` (never commit `.env`).  A missing setting fails startup. Do not invent a value.
 
 ---
 
@@ -135,7 +109,7 @@ All settings come from environment variables via pydantic-settings. **None has a
 7. Webhooks are at-least-once. Processing must be idempotent.
 8. Money is integer minor units (kobo). Currency comes from settings and is snapshotted on orders and payments.
 9. Card data is never stored. Only gateway references.
-10. **Every state change on `orders`, `payments`, and `service_requests` is a conditional `UPDATE ... WHERE status = :expected`, with `rowcount` checked.** Anything not in the transition table (`docs/spec.md` section 4) is illegal.
+10. **Every state change on `orders`, `payments`, and `service_requests` is a conditional `UPDATE ... WHERE status = :expected`, with `rowcount` checked.** Anything not in the transition table.
 11. A browser redirect or callback is never proof of payment. Only the verified gateway webhook is.
 12. Never mark a payment `failed` because a gateway call failed or timed out. Leave it `initiated`.
 13. Paystack sends no failure webhook. Only `charge.success` and `refund.*` events are acted on; every other event type is acknowledged and ignored.
@@ -150,7 +124,7 @@ All settings come from environment variables via pydantic-settings. **None has a
 - Use explicit timeouts on every external HTTP call (Google JWKS, Paystack, Resend, Cloudinary).
 - Send email only from Celery tasks, with a deterministic Resend idempotency key.
 - Store uploaded images as Cloudinary URLs only; never proxy or persist image bytes.
-- Log anomalies and manual-review events at `ERROR` using the stable event names in `docs/spec.md` section 9.
+- Log anomalies and manual-review events at `ERROR` using the stable event names
 
 **Ask first**
 - New library or framework, new table, new endpoint, new setting.
@@ -160,8 +134,7 @@ All settings come from environment variables via pydantic-settings. **None has a
 **Never**
 - Implement a server-side OAuth/OIDC flow in FastAPI. Auth is ID-token verify-only (Google). Roles come from the database, never from the token.
 - Add `/register`, `/login`, or password fields.
-- Add endpoints that are not listed in `docs/spec.md` section 6.
-- Add a cart table (the cart is client-side), or any stock or inventory tracking.
+- Add endpoints that are not listed
 - Auto-refund duplicate payments or amount/currency mismatches (they go to `needs_review`). Automatic refunds happen only for a late payment that cannot be fulfilled and for an owner cancellation of a paid order.
 - Auto-retry a failed refund.
 - Auto-link accounts by email.
@@ -177,13 +150,13 @@ All settings come from environment variables via pydantic-settings. **None has a
 
 A change is done when `ruff check`, `ruff format --check`, `pyright`, and `pytest` all pass.
 
-- Tests run against a **real PostgreSQL 17 database**. There is no SQLite anywhere in the project.
+- Tests run against a **real PostgreSQL 17 database**. 
 - `TEST_DATABASE_URL` is a test-only environment variable (listed in `.env.example`, not an app setting). It points to a dedicated test database that **must differ from `DATABASE_URL`**; the test setup refuses to run if they are equal. Locally it targets the Compose `postgres` service; in CI it targets a PostgreSQL 17 service container.
 - Setup: create the test database if missing, build the schema once per session with `metadata.create_all`, and `TRUNCATE ... RESTART IDENTITY CASCADE` all tables between tests. Services commit for real, so do not wrap tests in an outer rolled-back transaction.
 - Concurrency tests open separate sessions and run them concurrently (`asyncio.TaskGroup`), then assert on committed state.
 - Override dependencies for the current user, payment provider, and Resend client (no real Google). Mock outbound HTTP with `httpx.MockTransport`. No real network calls. Redis is not needed in tests.
 - Do not run Celery tasks eagerly in the pytest loop. Test the async `_impl` functions directly.
-- Must-have test list: `docs/spec.md` section 11.
+- Must-have test list.
 
 ---
 

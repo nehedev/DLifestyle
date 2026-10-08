@@ -1,9 +1,10 @@
 # Agent Instructions
 
-This repository contains two applications:
+This repository contains three applications:
 
 - frontend/ — web frontend
 - backend/ — API/backend service
+- mobile/ — Mobile application
 
 ## Rules
 
@@ -14,6 +15,7 @@ This repository contains two applications:
 
 3. Frontend code belongs in frontend/.
    Backend code belongs in backend/.
+   Mobile app code belong to mobile/.
 
 4. Do not move business logic between frontend and backend.
    The backend owns authentication verification, business rules,
