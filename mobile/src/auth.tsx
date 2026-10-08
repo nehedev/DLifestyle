@@ -194,19 +194,39 @@ function GoogleSession({ children }: { children: ReactNode }) {
 
   // Exchange a Google id_token with the backend and store the resulting session.
   const applyIdToken = useCallback(async (idToken: string) => {
-    const session = await googleSignInWithToken(idToken)
-    await persistSession(
-      session.id_token,
-      session.expires_at,
-      session.user.first_name,
-      session.picture ?? undefined,
-    )
-    tokenRef.current = session.id_token
-    expiryRef.current = session.expires_at * 1000
-    setToken(session.id_token)
-    setName(session.user.first_name)
-    setPicture(session.picture ?? undefined)
-    return session
+    console.log('[Auth] Exchanging idToken with backend...')
+    console.log('[Auth] API Base URL:', process.env.EXPO_PUBLIC_API_BASE_URL)
+    try {
+      const session = await googleSignInWithToken(idToken)
+      console.log('[Auth] Backend response:', {
+        user: session.user.email,
+        expiresAt: session.expires_at,
+        hasToken: !!session.id_token,
+      })
+      await persistSession(
+        session.id_token,
+        session.expires_at,
+        session.user.first_name,
+        session.picture ?? undefined,
+      )
+      tokenRef.current = session.id_token
+      expiryRef.current = session.expires_at * 1000
+      setToken(session.id_token)
+      setName(session.user.first_name)
+      setPicture(session.picture ?? undefined)
+      console.log('[Auth] Session persisted successfully')
+      return session
+    } catch (error) {
+      console.error('[Auth] Backend call failed:', error)
+      if (error instanceof ApiError) {
+        console.error('[Auth] Backend ApiError:', {
+          status: error.status,
+          detail: error.detail,
+          message: error.message,
+        })
+      }
+      throw error
+    }
   }, [])
 
   const dropLocalSession = useCallback(async () => {
@@ -305,26 +325,43 @@ function GoogleSession({ children }: { children: ReactNode }) {
       setWelcome(session.user.first_name)
     } catch (err) {
       console.error('[Auth] Sign-in error:', err)
+      
+      // In development, show detailed error information
+      let errorMessage = 'Unknown error occurred'
+      
       if (err instanceof ApiError) {
-        setError(
-          err.status === 409
-            ? 'An account already exists for that email. Please sign in with your original method.'
-            : 'We could not verify your Google sign-in. Please try again.',
-        )
+        errorMessage = `API Error ${err.status}: ${JSON.stringify(err.detail)}`
+        console.error('[Auth] ApiError details:', {
+          status: err.status,
+          detail: err.detail,
+          message: err.message,
+        })
       } else if (isErrorWithCode(err)) {
-        switch (err.code) {
-          case statusCodes.SIGN_IN_CANCELLED:
-          case statusCodes.IN_PROGRESS:
-            break
-          case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
-            setError('Google Play Services is unavailable or out of date on this device.')
-            break
-          default:
-            setError('Google sign-in failed. Please try again.')
+        const googleError = err as { code: string; message?: string }
+        errorMessage = `Google Error: ${googleError.code}${googleError.message ? ` - ${googleError.message}` : ''}`
+        console.error('[Auth] Google error details:', {
+          code: googleError.code,
+          message: googleError.message,
+          fullError: err,
+        })
+        
+        // Don't show error for user cancellation or in-progress
+        if (err.code === statusCodes.SIGN_IN_CANCELLED || err.code === statusCodes.IN_PROGRESS) {
+          return
         }
+      } else if (err instanceof Error) {
+        errorMessage = `Error: ${err.name} - ${err.message}`
+        console.error('[Auth] Error details:', {
+          name: err.name,
+          message: err.message,
+          stack: err.stack,
+        })
       } else {
-        setError('Google sign-in failed. Please try again.')
+        errorMessage = `Unknown error: ${String(err)}`
+        console.error('[Auth] Unknown error type:', err)
       }
+      
+      setError(errorMessage)
     } finally {
       setIsLoading(false)
     }
