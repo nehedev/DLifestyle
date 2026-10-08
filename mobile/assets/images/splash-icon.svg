@@ -1,0 +1,18 @@
+<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Transparent background - the backgroundColor from app.json will show through -->
+  
+  <!-- Yellow/gold chef's toque (hat) centered at top -->
+  <!-- Hat base (band) -->
+  <rect x="131" y="230" width="250" height="70" rx="16" fill="#FFC107"/>
+  
+  <!-- Hat top (puffy rounded top) -->
+  <ellipse cx="256" cy="165" rx="125" ry="95" fill="#FFC107"/>
+  
+  <!-- Green leaf cutout - stylized leaf shape in the center -->
+  <path d="M 256 110 Q 236 135, 236 165 Q 236 185, 256 215 Q 276 185, 276 165 Q 276 135, 256 110 Z" fill="#2E7D32"/>
+  <!-- Leaf vein detail -->
+  <line x1="256" y1="115" x2="256" y2="210" stroke="#1B5E20" stroke-width="4" stroke-linecap="round"/>
+  
+  <!-- Text: "Dami's Lifestyle" in Pacifico font -->
+  <text x="256" y="400" font-family="Pacifico, cursive, serif" font-size="52" fill="#FFFFFF" text-anchor="middle" dominant-baseline="middle" font-weight="400">Dami's Lifestyle</text>
+</svg>

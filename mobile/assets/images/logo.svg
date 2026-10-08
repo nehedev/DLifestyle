@@ -1,0 +1,16 @@
+<svg width="256" height="256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Green background circle -->
+  <circle cx="128" cy="128" r="128" fill="#2E7D32"/>
+  
+  <!-- Yellow/gold chef's toque (hat) -->
+  <!-- Hat base (band) -->
+  <rect x="54" y="135" width="148" height="38" rx="8" fill="#FFC107"/>
+  
+  <!-- Hat top (puffy rounded top) -->
+  <ellipse cx="128" cy="95" rx="74" ry="55" fill="#FFC107"/>
+  
+  <!-- Green leaf cutout - stylized leaf shape in the center of the hat -->
+  <path d="M 128 70 Q 115 85, 115 100 Q 115 110, 128 125 Q 141 110, 141 100 Q 141 85, 128 70 Z" fill="#2E7D32"/>
+  <!-- Leaf vein detail -->
+  <line x1="128" y1="75" x2="128" y2="120" stroke="#1B5E20" stroke-width="2" stroke-linecap="round"/>
+</svg>

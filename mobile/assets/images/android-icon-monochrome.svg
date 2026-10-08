@@ -1,0 +1,8 @@
+<svg width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- White chef's toque on transparent background for monochrome theme -->
+  <!-- Hat base (band) -->
+  <rect x="256" y="520" width="512" height="140" rx="32" fill="#FFFFFF"/>
+  
+  <!-- Hat top (puffy rounded top) -->
+  <ellipse cx="512" cy="400" rx="256" ry="200" fill="#FFFFFF"/>
+</svg>
