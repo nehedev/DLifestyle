@@ -26,7 +26,7 @@ const TAB_ROUTES: Record<Tab, string> = {
 export function Header() {
   const insets = useSafeAreaInsets()
   const { count } = useCart()
-  const { isAuthenticated, isLoading, name, picture, login, logout } = useSession()
+  const { isAuthenticated, isLoading, name, picture, login, logout, error } = useSession()
   const [menuOpen, setMenuOpen] = useState(false)
 
   // Close the account menu if the user signs out while it's open.
@@ -39,56 +39,67 @@ export function Header() {
   const initial = (name ?? '?')[0].toUpperCase()
 
   return (
-    <View style={[styles.hdr, { paddingTop: insets.top + 10 }]}>
-      <View style={styles.hdrIn}>
-        <Pressable style={styles.brand} onPress={() => goToTab('index')} hitSlop={6}>
-          <View style={styles.mark}>
-            <Text style={styles.markTxt}>D</Text>
-          </View>
-          <View>
-            <Text style={styles.wm}>DAMI'S</Text>
-            <Text style={styles.wm}>LIFESTYLE</Text>
-          </View>
-        </Pressable>
-
-        <View style={styles.hdrRight}>
-          <Pressable
-            style={styles.cartBtn}
-            onPress={() => goToTab('cart')}
-            hitSlop={6}
-            accessibilityLabel={`Cart, ${count} items`}
-          >
-            <MaterialCommunityIcons name="cart-outline" size={24} color={C.ink} />
-            {count > 0 && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeTxt}>{count}</Text>
-              </View>
-            )}
+    <>
+      <View style={[styles.hdr, { paddingTop: insets.top + 10 }]}>
+        <View style={styles.hdrIn}>
+          <Pressable style={styles.brand} onPress={() => goToTab('index')} hitSlop={6}>
+            <Image
+              source={require('@/assets/images/logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <View>
+              <Text style={styles.wm}>DAMI'S</Text>
+              <Text style={styles.wm}>LIFESTYLE</Text>
+            </View>
           </Pressable>
 
-          {isAuthenticated ? (
+          <View style={styles.hdrRight}>
             <Pressable
-              style={styles.avatar}
-              onPress={() => setMenuOpen(true)}
-              accessibilityLabel="Account menu"
+              style={styles.cartBtn}
+              onPress={() => goToTab('cart')}
+              hitSlop={6}
+              accessibilityLabel={`Cart, ${count} items`}
             >
-              {picture ? (
-                <Image source={{ uri: picture }} style={styles.photo} />
-              ) : (
-                <Text style={styles.initial}>{initial}</Text>
+              <MaterialCommunityIcons name="cart-outline" size={24} color={C.ink} />
+              {count > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeTxt}>{count}</Text>
+                </View>
               )}
             </Pressable>
-          ) : (
-            <Pressable
-              style={[styles.signIn, isLoading && { opacity: 0.5 }]}
-              onPress={login}
-              disabled={isLoading}
-            >
-              <Text style={styles.signInTxt}>Sign in</Text>
-            </Pressable>
-          )}
+
+            {isAuthenticated ? (
+              <Pressable
+                style={styles.avatar}
+                onPress={() => setMenuOpen(true)}
+                accessibilityLabel="Account menu"
+              >
+                {picture ? (
+                  <Image source={{ uri: picture }} style={styles.photo} />
+                ) : (
+                  <Text style={styles.initial}>{initial}</Text>
+                )}
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.signIn, isLoading && { opacity: 0.5 }]}
+                onPress={login}
+                disabled={isLoading}
+              >
+                <Text style={styles.signInTxt}>Sign in</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       </View>
+
+      {error && (
+        <View style={styles.errorBanner}>
+          <MaterialCommunityIcons name="alert-circle" size={18} color={C.burg} />
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
 
       <Modal
         transparent
@@ -135,7 +146,7 @@ export function Header() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </>
   )
 }
 
@@ -153,15 +164,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  mark: {
+  logo: {
     width: 34,
     height: 34,
-    borderRadius: 9,
-    backgroundColor: C.green,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  markTxt: { color: '#fff', fontWeight: '800', fontSize: 19 },
   wm: { fontWeight: '800', fontSize: 12, color: C.ink, letterSpacing: 0.5 },
   hdrRight: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   cartBtn: { padding: 4 },
@@ -248,4 +254,20 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   menuItemTxt: { fontWeight: '600', fontSize: 14, color: C.ink },
+  errorBanner: {
+    backgroundColor: '#FEE',
+    borderBottomWidth: 1,
+    borderBottomColor: C.burg,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  errorText: {
+    flex: 1,
+    color: C.burg,
+    fontSize: 13,
+    fontWeight: '600',
+  },
 })
