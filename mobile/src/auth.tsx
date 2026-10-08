@@ -41,6 +41,10 @@ if (WEB_CLIENT_ID) {
     webClientId: WEB_CLIENT_ID,
     iosClientId: IOS_CLIENT_ID,
     scopes: ['profile', 'email'],
+    offlineAccess: false,
+    // Note: Android Credential Manager (useCredentialManager: true) is only available
+    // in the paid "Universal Sign In" version at universal-sign-in.com
+    // The free version uses the legacy Google Sign-In SDK
   })
 }
 
