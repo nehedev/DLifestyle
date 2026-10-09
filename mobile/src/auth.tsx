@@ -42,11 +42,40 @@ if (WEB_CLIENT_ID) {
     iosClientId: IOS_CLIENT_ID,
     scopes: ['profile', 'email'],
     offlineAccess: false,
-    // Note: Android Credential Manager (useCredentialManager: true) is only available
-    // in the paid "Universal Sign In" version at universal-sign-in.com
-    // The free version uses the legacy Google Sign-In SDK
   })
 }
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const GOOGLE_SIGNIN_TIMEOUT_MS = 90_000
+const BACKEND_TIMEOUT_MS = 60_000 // Increased from 20s to 60s for slower networks
+const EXPIRY_SKEW_MS = 60_000
+
+/** Rejects with an Error named 'TimeoutError' if `p` doesn't settle in time. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => {
+      const e = new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)
+      e.name = 'TimeoutError'
+      reject(e)
+    }, ms)
+    p.then(
+      (v) => {
+        clearTimeout(t)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(t)
+        reject(e)
+      },
+    )
+  })
+}
+
+const CONFIG_HINT =
+  'If you did not cancel, this is usually a configuration problem: the SHA-1 of the ' +
+  'key that signed this build, the Android package name, or the Google Cloud project ' +
+  'does not match your Android OAuth client.'
 
 // ─── Session context ─────────────────────────────────────────────────────────
 
@@ -79,71 +108,60 @@ const EXPIRY_KEY = 'damis.google_expiry'
 const NAME_KEY = 'damis.user_name'
 const PICTURE_KEY = 'damis.user_picture'
 
+interface StoredSession {
+  token: string
+  expiry: number // ms since epoch
+  name?: string
+  picture?: string
+}
+
 async function persistSession(
   idToken: string,
-  expiresAt: number, // seconds since epoch
+  expiresAtSeconds: number,
   name?: string,
   picture?: string,
 ) {
+  const profile: [string, string][] = [
+    [EXPIRY_KEY, String(expiresAtSeconds * 1000)],
+    [NAME_KEY, name ?? ''],
+    [PICTURE_KEY, picture ?? ''],
+  ]
   if (Platform.OS === 'web') {
-    // Web: store everything in AsyncStorage (no SecureStore support)
-    await AsyncStorage.multiSet([
-      [TOKEN_KEY, idToken],
-      [EXPIRY_KEY, String(expiresAt * 1000)],
-      [NAME_KEY, name ?? ''],
-      [PICTURE_KEY, picture ?? ''],
-    ])
+    await AsyncStorage.multiSet([[TOKEN_KEY, idToken], ...profile])
   } else {
-    // Native: token in SecureStore, profile in AsyncStorage
     await SecureStore.setItemAsync(TOKEN_KEY, idToken)
-    await AsyncStorage.multiSet([
-      [EXPIRY_KEY, String(expiresAt * 1000)],
-      [NAME_KEY, name ?? ''],
-      [PICTURE_KEY, picture ?? ''],
-    ])
+    await AsyncStorage.multiSet(profile)
   }
 }
 
-async function loadSession() {
-  let token: string | null
-  
-  if (Platform.OS === 'web') {
-    // Web: load everything from AsyncStorage
-    const entries = await AsyncStorage.multiGet([TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
-    const map = Object.fromEntries(entries)
-    token = map[TOKEN_KEY] || null
-    if (!token) return null
-    return {
-      token,
-      expiry: Number(map[EXPIRY_KEY] ?? 0),
-      name: map[NAME_KEY] || undefined,
-      picture: map[PICTURE_KEY] || undefined,
-    }
-  } else {
-    // Native: load token from SecureStore, profile from AsyncStorage
-    token = await SecureStore.getItemAsync(TOKEN_KEY)
-    const entries = await AsyncStorage.multiGet([EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
-    const map = Object.fromEntries(entries)
-    if (!token) return null
-    return {
-      token,
-      expiry: Number(map[EXPIRY_KEY] ?? 0),
-      name: map[NAME_KEY] || undefined,
-      picture: map[PICTURE_KEY] || undefined,
-    }
+async function loadSession(): Promise<StoredSession | null> {
+  const isWeb = Platform.OS === 'web'
+  const keys = isWeb
+    ? [TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY]
+    : [EXPIRY_KEY, NAME_KEY, PICTURE_KEY]
+
+  const entries = await AsyncStorage.multiGet(keys)
+  const map = Object.fromEntries(entries) as Record<string, string | null>
+  const token = isWeb ? map[TOKEN_KEY] : await SecureStore.getItemAsync(TOKEN_KEY)
+  if (!token) return null
+
+  return {
+    token,
+    expiry: Number(map[EXPIRY_KEY] ?? 0),
+    name: map[NAME_KEY] || undefined,
+    picture: map[PICTURE_KEY] || undefined,
   }
 }
 
 async function clearSession() {
+  const profileKeys = [EXPIRY_KEY, NAME_KEY, PICTURE_KEY]
   if (Platform.OS === 'web') {
-    await AsyncStorage.multiRemove([TOKEN_KEY, EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+    await AsyncStorage.multiRemove([TOKEN_KEY, ...profileKeys])
   } else {
     await SecureStore.deleteItemAsync(TOKEN_KEY)
-    await AsyncStorage.multiRemove([EXPIRY_KEY, NAME_KEY, PICTURE_KEY])
+    await AsyncStorage.multiRemove(profileKeys)
   }
 }
-
-const EXPIRY_SKEW_MS = 60_000
 
 // ─── Welcome overlay ─────────────────────────────────────────────────────────
 
@@ -191,42 +209,27 @@ function GoogleSession({ children }: { children: ReactNode }) {
   const tokenRef = useRef<string | null>(null)
   const expiryRef = useRef(0)
   const refreshing = useRef<Promise<string | undefined> | null>(null)
+  const loginInFlight = useRef(false)
 
   // Exchange a Google id_token with the backend and store the resulting session.
   const applyIdToken = useCallback(async (idToken: string) => {
-    console.log('[Auth] Exchanging idToken with backend...')
-    console.log('[Auth] API Base URL:', process.env.EXPO_PUBLIC_API_BASE_URL)
-    try {
-      const session = await googleSignInWithToken(idToken)
-      console.log('[Auth] Backend response:', {
-        user: session.user.email,
-        expiresAt: session.expires_at,
-        hasToken: !!session.id_token,
-      })
-      await persistSession(
-        session.id_token,
-        session.expires_at,
-        session.user.first_name,
-        session.picture ?? undefined,
-      )
-      tokenRef.current = session.id_token
-      expiryRef.current = session.expires_at * 1000
-      setToken(session.id_token)
-      setName(session.user.first_name)
-      setPicture(session.picture ?? undefined)
-      console.log('[Auth] Session persisted successfully')
-      return session
-    } catch (error) {
-      console.error('[Auth] Backend call failed:', error)
-      if (error instanceof ApiError) {
-        console.error('[Auth] Backend ApiError:', {
-          status: error.status,
-          detail: error.detail,
-          message: error.message,
-        })
-      }
-      throw error
-    }
+    const session = await withTimeout(
+      googleSignInWithToken(idToken),
+      BACKEND_TIMEOUT_MS,
+      'Backend sign-in',
+    )
+    await persistSession(
+      session.id_token,
+      session.expires_at,
+      session.user.first_name,
+      session.picture ?? undefined,
+    )
+    tokenRef.current = session.id_token
+    expiryRef.current = session.expires_at * 1000
+    setToken(session.id_token)
+    setName(session.user.first_name)
+    setPicture(session.picture ?? undefined)
+    return session
   }, [])
 
   const dropLocalSession = useCallback(async () => {
@@ -235,37 +238,50 @@ function GoogleSession({ children }: { children: ReactNode }) {
     setToken(null)
     setName(undefined)
     setPicture(undefined)
-    await clearSession()
+    try {
+      await clearSession()
+    } catch (e) {
+      console.warn('[Auth] clearSession failed:', e)
+    }
   }, [])
 
-  // Silently get a fresh id_token from Google and re-exchange it. Concurrent
-  // callers share one in-flight refresh.
+  // The actual refresh work. Never throws.
+  const doRefresh = useCallback(async (): Promise<string | undefined> => {
+    try {
+      if (!GoogleSignin.hasPreviousSignIn()) {
+        await dropLocalSession()
+        return undefined
+      }
+      const res = await GoogleSignin.signInSilently()
+      if (isNoSavedCredentialFoundResponse(res) || !res.data.idToken) {
+        await dropLocalSession()
+        return undefined
+      }
+      const session = await applyIdToken(res.data.idToken)
+      return session.id_token
+    } catch (err) {
+      // Google says the user must sign in again: the session is truly dead.
+      if (isErrorWithCode(err) && err.code === statusCodes.SIGN_IN_REQUIRED) {
+        await dropLocalSession()
+        return undefined
+      }
+      // Transient failure (offline, backend down): keep the local session
+      // as-is and let the caller's request fail normally.
+      console.warn('[Auth] Silent refresh failed:', err)
+      return undefined
+    }
+  }, [applyIdToken, dropLocalSession])
+
+  // Concurrent callers share one in-flight refresh. The slot is cleared by a
+  // .finally attached AFTER assignment, so it can never get stuck.
   const refresh = useCallback((): Promise<string | undefined> => {
     if (refreshing.current) return refreshing.current
-    const p = (async () => {
-      try {
-        if (!GoogleSignin.hasPreviousSignIn()) {
-          await dropLocalSession()
-          return undefined
-        }
-        const res = await GoogleSignin.signInSilently()
-        if (isNoSavedCredentialFoundResponse(res) || !res.data.idToken) {
-          await dropLocalSession()
-          return undefined
-        }
-        const session = await applyIdToken(res.data.idToken)
-        return session.id_token
-      } catch {
-        // Transient failure (offline, backend down): keep the local session
-        // as-is and let the caller's request fail normally.
-        return undefined
-      } finally {
-        refreshing.current = null
-      }
-    })()
+    const p: Promise<string | undefined> = doRefresh().finally(() => {
+      if (refreshing.current === p) refreshing.current = null
+    })
     refreshing.current = p
     return p
-  }, [applyIdToken, dropLocalSession])
+  }, [doRefresh])
 
   // Restore persisted session on mount, refresh if stale, then wire the getter.
   useEffect(() => {
@@ -279,19 +295,25 @@ function GoogleSession({ children }: { children: ReactNode }) {
     })
 
     ;(async () => {
-      const s = await loadSession()
-      if (cancelled) return
-      if (s) {
-        tokenRef.current = s.token
-        expiryRef.current = s.expiry
-        setToken(s.token)
-        setName(s.name)
-        setPicture(s.picture)
-        if (Date.now() >= s.expiry - EXPIRY_SKEW_MS) {
-          await refresh()
+      try {
+        const s = await loadSession()
+        if (cancelled) return
+        if (s) {
+          tokenRef.current = s.token
+          expiryRef.current = s.expiry
+          setToken(s.token)
+          setName(s.name)
+          setPicture(s.picture)
+          if (Date.now() >= s.expiry - EXPIRY_SKEW_MS) {
+            await refresh()
+          }
         }
+      } catch (e) {
+        console.warn('[Auth] Failed to restore session:', e)
+      } finally {
+        // Always mark ready, otherwise the app can sit on a splash forever.
+        if (!cancelled) setHydrated(true)
       }
-      if (!cancelled) setHydrated(true)
     })()
 
     return () => {
@@ -301,68 +323,79 @@ function GoogleSession({ children }: { children: ReactNode }) {
   }, [refresh])
 
   const login = useCallback(async () => {
+    if (loginInFlight.current) return
+    loginInFlight.current = true
     setIsLoading(true)
     setError(undefined)
+
     try {
-      console.log('[Auth] Starting Google sign-in...')
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true })
-      console.log('[Auth] Play Services available')
-      const res = await GoogleSignin.signIn()
-      console.log('[Auth] Google sign-in response:', res)
-      if (!isSuccessResponse(res)) {
-        console.log('[Auth] User cancelled or non-success response')
-        return // user cancelled
+      if (Platform.OS === 'android') {
+        await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true })
       }
+
+      // Timeout so a signIn() that never settles can't leave the UI stuck.
+      const res = await withTimeout(
+        GoogleSignin.signIn(),
+        GOOGLE_SIGNIN_TIMEOUT_MS,
+        'Google sign-in',
+      )
+
+      if (!isSuccessResponse(res)) {
+        // Do NOT swallow this: config errors often surface as "cancelled".
+        setError(`Google sign-in returned "${res.type}". ${CONFIG_HINT}`)
+        return
+      }
+
       const idToken = res.data.idToken
       if (!idToken) {
-        console.error('[Auth] No idToken in response')
         setError('Google sign-in did not return a token. Please try again.')
         return
       }
-      console.log('[Auth] Got idToken, calling backend...')
-      const session = await applyIdToken(idToken)
-      console.log('[Auth] Backend returned session:', session.user.email)
-      setWelcome(session.user.first_name)
+
+      try {
+        const session = await applyIdToken(idToken)
+        setWelcome(session.user.first_name)
+      } catch (backendErr) {
+        // Clear Google's cached account so a retry starts from a clean state.
+        try {
+          await GoogleSignin.signOut()
+        } catch {
+          // best effort
+        }
+        throw backendErr
+      }
     } catch (err) {
       console.error('[Auth] Sign-in error:', err)
-      
-      // In development, show detailed error information
-      let errorMessage = 'Unknown error occurred'
-      
-      if (err instanceof ApiError) {
-        errorMessage = `API Error ${err.status}: ${JSON.stringify(err.detail)}`
-        console.error('[Auth] ApiError details:', {
-          status: err.status,
-          detail: err.detail,
-          message: err.message,
-        })
+
+      let message: string
+      if (err instanceof Error && err.name === 'TimeoutError') {
+        message =
+          `${err.message}. If this was Google sign-in, fully close the app and try ` +
+          'again. If it keeps happening, check your Android OAuth client setup.'
+      } else if (err instanceof ApiError) {
+        message = `API Error ${err.status}: ${JSON.stringify(err.detail)}`
       } else if (isErrorWithCode(err)) {
-        const googleError = err as { code: string; message?: string }
-        errorMessage = `Google Error: ${googleError.code}${googleError.message ? ` - ${googleError.message}` : ''}`
-        console.error('[Auth] Google error details:', {
-          code: googleError.code,
-          message: googleError.message,
-          fullError: err,
-        })
-        
-        // Don't show error for user cancellation or in-progress
-        if (err.code === statusCodes.SIGN_IN_CANCELLED || err.code === statusCodes.IN_PROGRESS) {
-          return
+        const e = err as { code: string; message?: string }
+        if (e.code === statusCodes.SIGN_IN_CANCELLED) {
+          message = `Google sign-in was cancelled (code ${e.code}). ${CONFIG_HINT}`
+        } else if (e.code === statusCodes.IN_PROGRESS) {
+          message =
+            'A previous sign-in attempt never completed. Fully close the app ' +
+            '(swipe it away) and try again.'
+        } else if (e.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+          message = 'Google Play Services is missing or out of date on this device.'
+        } else {
+          message = `Google Error: ${e.code}${e.message ? ` - ${e.message}` : ''}`
         }
       } else if (err instanceof Error) {
-        errorMessage = `Error: ${err.name} - ${err.message}`
-        console.error('[Auth] Error details:', {
-          name: err.name,
-          message: err.message,
-          stack: err.stack,
-        })
+        message = `Error: ${err.name} - ${err.message}`
       } else {
-        errorMessage = `Unknown error: ${String(err)}`
-        console.error('[Auth] Unknown error type:', err)
+        message = `Unknown error: ${String(err)}`
       }
-      
-      setError(errorMessage)
+
+      setError(message)
     } finally {
+      loginInFlight.current = false
       setIsLoading(false)
     }
   }, [applyIdToken])
@@ -413,6 +446,7 @@ function UnconfiguredSession({ children }: { children: ReactNode }) {
       ready: true,
       login: () => {},
       logout: () => {},
+      error: 'Google sign-in is not configured (EXPO_PUBLIC_GOOGLE_CLIENT_ID is missing in this build).',
     }),
     [],
   )
